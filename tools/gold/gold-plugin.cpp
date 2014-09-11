@@ -457,6 +457,7 @@ static void drop(GlobalValue &GV) {
                          /*Initializer*/ nullptr);
   Var->takeName(&Alias);
   Alias.replaceAllUsesWith(Var);
+  Alias.eraseFromParent();
 }
 
 static const char *getResolutionName(ld_plugin_symbol_resolution R) {
@@ -692,7 +693,7 @@ static void codegen(Module &M) {
   runLTOPasses(M, *TM);
 
   PassManager CodeGenPasses;
-  CodeGenPasses.add(new DataLayoutPass(&M));
+  CodeGenPasses.add(new DataLayoutPass());
 
   SmallString<128> Filename;
   int FD;
