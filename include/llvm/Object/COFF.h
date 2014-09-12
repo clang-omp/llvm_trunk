@@ -215,8 +215,8 @@ struct coff_symbol {
 
   support::ulittle16_t Type;
 
-  support::ulittle8_t StorageClass;
-  support::ulittle8_t NumberOfAuxSymbols;
+  uint8_t StorageClass;
+  uint8_t NumberOfAuxSymbols;
 };
 
 typedef coff_symbol<support::ulittle16_t> coff_symbol16;
@@ -362,12 +362,12 @@ struct coff_aux_section_definition {
   support::ulittle16_t NumberOfLinenumbers;
   support::ulittle32_t CheckSum;
   support::ulittle16_t Number;
-  support::ulittle8_t Selection;
+  uint8_t              Selection;
 };
 
 struct coff_aux_clr_token {
-  support::ulittle8_t AuxType;
-  support::ulittle8_t Reserved;
+  uint8_t              AuxType;
+  uint8_t              Reserved;
   support::ulittle32_t SymbolTableIndex;
 };
 
@@ -569,10 +569,10 @@ public:
   template <typename coff_symbol_type>
   std::error_code getSymbol(uint32_t Index,
                             const coff_symbol_type *&Res) const {
-    if (Index < getNumberOfSymbols())
-      Res = reinterpret_cast<coff_symbol_type *>(getSymbolTable()) + Index;
-    else
+    if (Index >= getNumberOfSymbols())
       return object_error::parse_failed;
+
+    Res = reinterpret_cast<coff_symbol_type *>(getSymbolTable()) + Index;
     return object_error::success;
   }
   ErrorOr<COFFSymbolRef> getSymbol(uint32_t index) const {

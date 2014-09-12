@@ -13,7 +13,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "FunctionCoverageMapping.h"
 #include "RenderingSupport.h"
 #include "CoverageViewOptions.h"
 #include "CoverageFilters.h"
@@ -177,7 +176,7 @@ CodeCoverageTool::getSourceFile(StringRef SourceFile) {
   SmallString<256> Path(SourceFile);
   sys::fs::make_absolute(Path);
   for (const auto &Files : LoadedSourceFiles) {
-    if (sys::fs::equivalent(Path.str(), Files.first)) {
+    if (equivalentFiles(Path.str(), Files.first)) {
       return *Files.second;
     }
   }
