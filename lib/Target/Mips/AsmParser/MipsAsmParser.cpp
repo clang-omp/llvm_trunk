@@ -981,6 +981,18 @@ static const MCInstrDesc &getInstDesc(unsigned Opcode) {
   return MipsInsts[Opcode];
 }
 
+static bool hasShortDelaySlot(unsigned Opcode) {
+  switch (Opcode) {
+    case Mips::JALS_MM:
+    case Mips::JALRS_MM:
+    case Mips::BGEZALS_MM:
+    case Mips::BLTZALS_MM:
+      return true;
+    default:
+      return false;
+  }
+}
+
 bool MipsAsmParser::processInstruction(MCInst &Inst, SMLoc IDLoc,
                                        SmallVectorImpl<MCInst> &Instructions) {
   const MCInstrDesc &MCID = getInstDesc(Inst.getOpcode());
@@ -1050,10 +1062,16 @@ bool MipsAsmParser::processInstruction(MCInst &Inst, SMLoc IDLoc,
     // emit a NOP after it.
     Instructions.push_back(Inst);
     MCInst NopInst;
-    NopInst.setOpcode(Mips::SLL);
-    NopInst.addOperand(MCOperand::CreateReg(Mips::ZERO));
-    NopInst.addOperand(MCOperand::CreateReg(Mips::ZERO));
-    NopInst.addOperand(MCOperand::CreateImm(0));
+    if (hasShortDelaySlot(Inst.getOpcode())) {
+      NopInst.setOpcode(Mips::MOVE16_MM);
+      NopInst.addOperand(MCOperand::CreateReg(Mips::ZERO));
+      NopInst.addOperand(MCOperand::CreateReg(Mips::ZERO));
+    } else {
+      NopInst.setOpcode(Mips::SLL);
+      NopInst.addOperand(MCOperand::CreateReg(Mips::ZERO));
+      NopInst.addOperand(MCOperand::CreateReg(Mips::ZERO));
+      NopInst.addOperand(MCOperand::CreateImm(0));
+    }
     Instructions.push_back(NopInst);
     return false;
   }
