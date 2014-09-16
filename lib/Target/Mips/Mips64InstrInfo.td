@@ -442,28 +442,22 @@ def : MipsInstAlias<"move $dst, $src",
       GPR_64;
 def : MipsInstAlias<"daddu $rs, $rt, $imm",
                     (DADDiu GPR64Opnd:$rs, GPR64Opnd:$rt, simm16_64:$imm),
-                    0>;
+                    0>, ISA_MIPS3;
 def : MipsInstAlias<"dadd $rs, $rt, $imm",
                     (DADDi GPR64Opnd:$rs, GPR64Opnd:$rt, simm16_64:$imm),
                     0>, ISA_MIPS3_NOT_32R6_64R6;
 def : MipsInstAlias<"daddu $rs, $imm",
                     (DADDiu GPR64Opnd:$rs, GPR64Opnd:$rs, simm16_64:$imm),
-                    0>;
+                    0>, ISA_MIPS3;
 def : MipsInstAlias<"dadd $rs, $imm",
                     (DADDi GPR64Opnd:$rs, GPR64Opnd:$rs, simm16_64:$imm),
                     0>, ISA_MIPS3_NOT_32R6_64R6;
-def : MipsInstAlias<"add $rs, $imm",
-                    (ADDi GPR32Opnd:$rs, GPR32Opnd:$rs, simm16:$imm),
-                    0>;
-def : MipsInstAlias<"addu $rs, $imm",
-                    (ADDiu GPR32Opnd:$rs, GPR32Opnd:$rs, simm16:$imm),
-                    0>;
 def : MipsInstAlias<"dsll $rd, $rt, $rs",
                     (DSLLV GPR64Opnd:$rd, GPR64Opnd:$rt, GPR32Opnd:$rs), 0>,
                     ISA_MIPS3;
 def : MipsInstAlias<"dsubu $rt, $rs, $imm",
                     (DADDiu GPR64Opnd:$rt, GPR64Opnd:$rs,
-                            InvertedImOperand64:$imm), 0>;
+                            InvertedImOperand64:$imm), 0>, ISA_MIPS3;
 def : MipsInstAlias<"dsubi $rs, $rt, $imm",
                     (DADDi GPR64Opnd:$rs, GPR64Opnd:$rt,
                            InvertedImOperand64:$imm),
@@ -483,7 +477,7 @@ def : MipsInstAlias<"dsub $rs, $imm",
 def : MipsInstAlias<"dsubu $rs, $imm",
                     (DADDiu GPR64Opnd:$rs, GPR64Opnd:$rs,
                             InvertedImOperand64:$imm),
-                    0>;
+                    0>, ISA_MIPS3;
 def : MipsInstAlias<"dsra $rd, $rt, $rs",
                     (DSRAV GPR64Opnd:$rd, GPR64Opnd:$rt, GPR32Opnd:$rs), 0>,
                     ISA_MIPS3;
