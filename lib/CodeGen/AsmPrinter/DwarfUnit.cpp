@@ -1670,6 +1670,9 @@ void DwarfCompileUnit::createGlobalVariableDIE(DIGlobalVariable GV) {
       DD->addArangeLabel(SymbolCU(this, Sym));
       addOpAddress(*Loc, Sym);
     }
+    // A static member's declaration is already flagged as such.
+    if (!SDMDecl.Verify() && !GV.isDefinition())
+      addFlag(*VariableDIE, dwarf::DW_AT_declaration);
     // Do not create specification DIE if context is either compile unit
     // or a subprogram.
     if (GVContext && GV.isDefinition() && !GVContext.isCompileUnit() &&
