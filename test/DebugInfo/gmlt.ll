@@ -16,6 +16,13 @@
 ; attribute on the CU.
 ; CHECK: DW_TAG_compile_unit
 ; CHECK-NOT: DW_AT_ranges
+; CHECK-NOT: {{DW_TAG|NULL}}
+; Check that we only provide the minimal attributes on a subprogram to save space.
+; CHECK:   DW_TAG_subprogram
+; CHECK-NEXT:     DW_AT_low_pc
+; CHECK-NEXT:     DW_AT_high_pc
+; CHECK-NEXT:     DW_AT_name
+; CHECK-NOT: DW_AT
 ; CHECK: {{DW_TAG|NULL}}
 
 ; FIXME: We probably want to avoid printing out anything if the section isn't there.
