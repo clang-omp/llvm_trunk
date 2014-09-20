@@ -7393,35 +7393,120 @@ static SmallBitVector computeZeroableShuffleElements(ArrayRef<int> Mask,
   return Zeroable;
 }
 
-/// \brief Try to lower a vector shuffle as a zero extension.
+/// \brief Lower a vector shuffle as a zero or any extension.
 ///
-/// This tries to use the SSE4.1 PMOVZX instruction family to lower a vector
-/// shuffle throuh a zero extension. It doesn't check for the availability or
-/// profitability of this lowering though, it tries to aggressively match this
-/// pattern. It handles both blends with all-zero inputs to explicitly
-/// zero-extend and undef-lanes (sometimes undef due to masking out later).
-static SDValue lowerVectorShuffleAsZeroExtend(SDLoc DL, MVT VT, SDValue V1,
-                                              SDValue V2, ArrayRef<int> Mask,
-                                              SelectionDAG &DAG) {
+/// Given a specific number of elements, element bit width, and extension
+/// stride, produce either a zero or any extension based on the available
+/// features of the subtarget.
+static SDValue lowerVectorShuffleAsSpecificZeroOrAnyExtend(
+    SDLoc DL, MVT VT, int NumElements, int Scale, bool AnyExt, SDValue InputV,
+    const X86Subtarget *Subtarget, SelectionDAG &DAG) {
+  assert(Scale > 1 && "Need a scale to extend.");
+  int EltBits = VT.getSizeInBits() / NumElements;
+  assert((EltBits == 8 || EltBits == 16 || EltBits == 32) &&
+         "Only 8, 16, and 32 bit elements can be extended.");
+  assert(Scale * EltBits <= 64 && "Cannot zero extend past 64 bits.");
+
+  // Found a valid zext mask! Try various lowering strategies based on the
+  // input type and available ISA extensions.
+  if (Subtarget->hasSSE41()) {
+    MVT InputVT = MVT::getVectorVT(MVT::getIntegerVT(EltBits), NumElements);
+    MVT ExtVT = MVT::getVectorVT(MVT::getIntegerVT(EltBits * Scale),
+                                 NumElements / Scale);
+    InputV = DAG.getNode(ISD::BITCAST, DL, InputVT, InputV);
+    return DAG.getNode(ISD::BITCAST, DL, VT,
+                       DAG.getNode(X86ISD::VZEXT, DL, ExtVT, InputV));
+  }
+
+  // For any extends we can cheat for larger element sizes and use shuffle
+  // instructions that can fold with a load and/or copy.
+  if (AnyExt && EltBits == 32) {
+    int PSHUFDMask[4] = {0, -1, 1, -1};
+    return DAG.getNode(
+        ISD::BITCAST, DL, VT,
+        DAG.getNode(X86ISD::PSHUFD, DL, MVT::v4i32,
+                    DAG.getNode(ISD::BITCAST, DL, MVT::v4i32, InputV),
+                    getV4X86ShuffleImm8ForMask(PSHUFDMask, DAG)));
+  }
+  if (AnyExt && EltBits == 16 && Scale > 2) {
+    int PSHUFDMask[4] = {0, -1, 0, -1};
+    InputV = DAG.getNode(X86ISD::PSHUFD, DL, MVT::v4i32,
+                         DAG.getNode(ISD::BITCAST, DL, MVT::v4i32, InputV),
+                         getV4X86ShuffleImm8ForMask(PSHUFDMask, DAG));
+    int PSHUFHWMask[4] = {1, -1, -1, -1};
+    return DAG.getNode(
+        ISD::BITCAST, DL, VT,
+        DAG.getNode(X86ISD::PSHUFHW, DL, MVT::v8i16,
+                    DAG.getNode(ISD::BITCAST, DL, MVT::v8i16, InputV),
+                    getV4X86ShuffleImm8ForMask(PSHUFHWMask, DAG)));
+  }
+
+  // If this would require more than 2 unpack instructions to expand, use
+  // pshufb when available. We can only use more than 2 unpack instructions
+  // when zero extending i8 elements which also makes it easier to use pshufb.
+  if (Scale > 4 && EltBits == 8 && Subtarget->hasSSSE3()) {
+    assert(NumElements == 16 && "Unexpected byte vector width!");
+    SDValue PSHUFBMask[16];
+    for (int i = 0; i < 16; ++i)
+      PSHUFBMask[i] =
+          DAG.getConstant((i % Scale == 0) ? i / Scale : 0x80, MVT::i8);
+    InputV = DAG.getNode(ISD::BITCAST, DL, MVT::v16i8, InputV);
+    return DAG.getNode(ISD::BITCAST, DL, VT,
+                       DAG.getNode(X86ISD::PSHUFB, DL, MVT::v16i8, InputV,
+                                   DAG.getNode(ISD::BUILD_VECTOR, DL,
+                                               MVT::v16i8, PSHUFBMask)));
+  }
+
+  // Otherwise emit a sequence of unpacks.
+  do {
+    MVT InputVT = MVT::getVectorVT(MVT::getIntegerVT(EltBits), NumElements);
+    SDValue Ext = AnyExt ? DAG.getUNDEF(InputVT)
+                         : getZeroVector(InputVT, Subtarget, DAG, DL);
+    InputV = DAG.getNode(ISD::BITCAST, DL, InputVT, InputV);
+    InputV = DAG.getNode(X86ISD::UNPCKL, DL, InputVT, InputV, Ext);
+    Scale /= 2;
+    EltBits *= 2;
+    NumElements /= 2;
+  } while (Scale > 1);
+  return DAG.getNode(ISD::BITCAST, DL, VT, InputV);
+}
+
+/// \brief Try to lower a vector shuffle as a zero extension on any micrarch.
+///
+/// This routine will try to do everything in its power to cleverly lower
+/// a shuffle which happens to match the pattern of a zero extend. It doesn't
+/// check for the profitability of this lowering,  it tries to aggressively
+/// match this pattern. It will use all of the micro-architectural details it
+/// can to emit an efficient lowering. It handles both blends with all-zero
+/// inputs to explicitly zero-extend and undef-lanes (sometimes undef due to
+/// masking out later).
+///
+/// The reason we have dedicated lowering for zext-style shuffles is that they
+/// are both incredibly common and often quite performance sensitive.
+static SDValue lowerVectorShuffleAsZeroOrAnyExtend(
+    SDLoc DL, MVT VT, SDValue V1, SDValue V2, ArrayRef<int> Mask,
+    const X86Subtarget *Subtarget, SelectionDAG &DAG) {
   SmallBitVector Zeroable = computeZeroableShuffleElements(Mask, V1, V2);
 
   int Bits = VT.getSizeInBits();
-  int EltBits = VT.getScalarSizeInBits();
   int NumElements = Mask.size();
 
-  // Define a helper function to check a particular zext-stride and lower to it
-  // if valid.
-  auto LowerWithStride = [&](int Stride) -> SDValue {
+  // Define a helper function to check a particular ext-scale and lower to it if
+  // valid.
+  auto Lower = [&](int Scale) -> SDValue {
     SDValue InputV;
+    bool AnyExt = true;
     for (int i = 0; i < NumElements; ++i) {
       if (Mask[i] == -1)
         continue; // Valid anywhere but doesn't tell us anything.
-      if (i % Stride != 0) {
+      if (i % Scale != 0) {
         // Each of the extend elements needs to be zeroable.
         if (!Zeroable[i])
           return SDValue();
-        else
-          continue;
+
+        // We no lorger are in the anyext case.
+        AnyExt = false;
+        continue;
       }
 
       // Each of the base elements needs to be consecutive indices into the
@@ -7432,7 +7517,7 @@ static SDValue lowerVectorShuffleAsZeroExtend(SDLoc DL, MVT VT, SDValue V1,
       else if (InputV != V)
         return SDValue(); // Flip-flopping inputs.
 
-      if (Mask[i] % NumElements != i / Stride)
+      if (Mask[i] % NumElements != i / Scale)
         return SDValue(); // Non-consecutive strided elemenst.
     }
 
@@ -7442,18 +7527,11 @@ static SDValue lowerVectorShuffleAsZeroExtend(SDLoc DL, MVT VT, SDValue V1,
     if (!InputV)
       return SDValue();
 
-    // Found a valid lowering! Compute all the types and the operation. We force
-    // everything to integer types here as that's the only way zext makes sense.
-    MVT InputVT = MVT::getVectorVT(MVT::getIntegerVT(EltBits), NumElements);
-    MVT ExtVT = MVT::getVectorVT(MVT::getIntegerVT(EltBits * Stride),
-                                 NumElements / Stride);
-
-    InputV = DAG.getNode(ISD::BITCAST, DL, InputVT, InputV);
-    return DAG.getNode(ISD::BITCAST, DL, VT,
-                       DAG.getNode(X86ISD::VZEXT, DL, ExtVT, InputV));
+    return lowerVectorShuffleAsSpecificZeroOrAnyExtend(
+        DL, VT, NumElements, Scale, AnyExt, InputV, Subtarget, DAG);
   };
 
-  // The widest stride possible for zero extending is to a 64-bit integer.
+  // The widest scale possible for extending is to a 64-bit integer.
   assert(Bits % 64 == 0 &&
          "The number of bits in a vector must be divisible by 64 on x86!");
   int NumExtElements = Bits / 64;
@@ -7461,16 +7539,100 @@ static SDValue lowerVectorShuffleAsZeroExtend(SDLoc DL, MVT VT, SDValue V1,
   // Each iteration, try extending the elements half as much, but into twice as
   // many elements.
   for (; NumExtElements < NumElements; NumExtElements *= 2) {
-    assert(
-        NumElements % NumExtElements == 0 &&
-        "The input vector size must be divisble by the extended size.");
-    int Stride = NumElements / NumExtElements;
-    if (SDValue V = LowerWithStride(Stride))
+    assert(NumElements % NumExtElements == 0 &&
+           "The input vector size must be divisble by the extended size.");
+    if (SDValue V = Lower(NumElements / NumExtElements))
       return V;
   }
 
-  // No viable zext lowering found.
+  // No viable ext lowering found.
   return SDValue();
+}
+
+/// \brief Try to lower insertion of a single element into a zero vector.
+///
+/// This is a common pattern that we have especially efficient patterns to lower
+/// across all subtarget feature sets.
+static SDValue lowerVectorShuffleAsElementInsertion(
+    MVT VT, SDLoc DL, SDValue V1, SDValue V2, ArrayRef<int> Mask,
+    const X86Subtarget *Subtarget, SelectionDAG &DAG) {
+  SmallBitVector Zeroable = computeZeroableShuffleElements(Mask, V1, V2);
+
+  int V2Index = std::find_if(Mask.begin(), Mask.end(),
+                             [&Mask](int M) { return M >= (int)Mask.size(); }) -
+                Mask.begin();
+  if (Mask.size() == 2) {
+    if (!Zeroable[V2Index ^ 1]) {
+      // For 2-wide masks we may be able to just invert the inputs. We use an xor
+      // with 2 to flip from {2,3} to {0,1} and vice versa.
+      int InverseMask[2] = {Mask[0] < 0 ? -1 : (Mask[0] ^ 2),
+                            Mask[1] < 0 ? -1 : (Mask[1] ^ 2)};
+      if (Zeroable[V2Index])
+        return lowerVectorShuffleAsElementInsertion(VT, DL, V2, V1, InverseMask,
+                                                    Subtarget, DAG);
+      else
+        return SDValue();
+    }
+  } else {
+    for (int i = 0, Size = Mask.size(); i < Size; ++i)
+      if (i != V2Index && !Zeroable[i])
+        return SDValue(); // Not inserting into a zero vector.
+  }
+
+  // Step over any bitcasts on either input so we can scan the actual
+  // BUILD_VECTOR nodes.
+  while (V1.getOpcode() == ISD::BITCAST)
+    V1 = V1.getOperand(0);
+  while (V2.getOpcode() == ISD::BITCAST)
+    V2 = V2.getOperand(0);
+
+  // Check for a single input from a SCALAR_TO_VECTOR node.
+  // FIXME: All of this should be canonicalized into INSERT_VECTOR_ELT and
+  // all the smarts here sunk into that routine. However, the current
+  // lowering of BUILD_VECTOR makes that nearly impossible until the old
+  // vector shuffle lowering is dead.
+  if (!((V2.getOpcode() == ISD::SCALAR_TO_VECTOR &&
+         Mask[V2Index] == (int)Mask.size()) ||
+        V2.getOpcode() == ISD::BUILD_VECTOR))
+    return SDValue();
+
+  SDValue V2S = V2.getOperand(Mask[V2Index] - Mask.size());
+
+  // First, we need to zext the scalar if it is smaller than an i32.
+  MVT ExtVT = VT;
+  MVT EltVT = VT.getVectorElementType();
+  V2S = DAG.getNode(ISD::BITCAST, DL, EltVT, V2S);
+  if (EltVT == MVT::i8 || EltVT == MVT::i16) {
+    // Zero-extend directly to i32.
+    ExtVT = MVT::v4i32;
+    V2S = DAG.getNode(ISD::ZERO_EXTEND, DL, MVT::i32, V2S);
+  }
+
+  V2 = DAG.getNode(X86ISD::VZEXT_MOVL, DL, ExtVT,
+                   DAG.getNode(ISD::SCALAR_TO_VECTOR, DL, ExtVT, V2S));
+  if (ExtVT != VT)
+    V2 = DAG.getNode(ISD::BITCAST, DL, VT, V2);
+
+  if (V2Index != 0) {
+    // If we have 4 or fewer lanes we can cheaply shuffle the element into
+    // the desired position. Otherwise it is more efficient to do a vector
+    // shift left. We know that we can do a vector shift left because all
+    // the inputs are zero.
+    if (VT.isFloatingPoint() || VT.getVectorNumElements() <= 4) {
+      SmallVector<int, 4> V2Shuffle(Mask.size(), 1);
+      V2Shuffle[V2Index] = 0;
+      V2 = DAG.getVectorShuffle(VT, DL, V2, DAG.getUNDEF(VT), V2Shuffle);
+    } else {
+      V2 = DAG.getNode(ISD::BITCAST, DL, MVT::v2i64, V2);
+      V2 = DAG.getNode(
+          X86ISD::VSHLDQ, DL, MVT::v2i64, V2,
+          DAG.getConstant(
+              V2Index * EltVT.getSizeInBits(),
+              DAG.getTargetLoweringInfo().getScalarShiftAmountTy(MVT::v2i64)));
+      V2 = DAG.getNode(ISD::BITCAST, DL, VT, V2);
+    }
+  }
+  return V2;
 }
 
 /// \brief Handle lowering of 2-lane 64-bit floating point shuffles.
@@ -7506,6 +7668,12 @@ static SDValue lowerV2F64VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
     return DAG.getNode(X86ISD::UNPCKL, DL, MVT::v2f64, V1, V2);
   if (isShuffleEquivalent(Mask, 1, 3))
     return DAG.getNode(X86ISD::UNPCKH, DL, MVT::v2f64, V1, V2);
+
+  // If we have a single input, insert that into V1 if we can do so cheaply.
+  if ((Mask[0] >= 2) + (Mask[1] >= 2) == 1)
+    if (SDValue Insertion = lowerVectorShuffleAsElementInsertion(
+            MVT::v2f64, DL, V1, V2, Mask, Subtarget, DAG))
+      return Insertion;
 
   if (Subtarget->hasSSE41())
     if (SDValue Blend =
@@ -7553,6 +7721,13 @@ static SDValue lowerV2I64VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
     return DAG.getNode(X86ISD::UNPCKL, DL, MVT::v2i64, V1, V2);
   if (isShuffleEquivalent(Mask, 1, 3))
     return DAG.getNode(X86ISD::UNPCKH, DL, MVT::v2i64, V1, V2);
+
+  // If we have a single input from V2 insert that into V1 if we can do so
+  // cheaply.
+  if ((Mask[0] >= 2) + (Mask[1] >= 2) == 1)
+    if (SDValue Insertion = lowerVectorShuffleAsElementInsertion(
+            MVT::v2i64, DL, V1, V2, Mask, Subtarget, DAG))
+      return Insertion;
 
   if (Subtarget->hasSSE41())
     if (SDValue Blend =
@@ -7609,6 +7784,16 @@ static SDValue lowerV4F32VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
   if (isShuffleEquivalent(Mask, 2, 6, 3, 7))
     return DAG.getNode(X86ISD::UNPCKH, DL, MVT::v4f32, V1, V2);
 
+  // There are special ways we can lower some single-element blends. However, we
+  // have custom ways we can lower more complex single-element blends below that
+  // we defer to if both this and BLENDPS fail to match, so restrict this to
+  // when the V2 input is targeting element 0 of the mask -- that is the fast
+  // case here.
+  if (NumV2Elements == 1 && Mask[0] >= 4)
+    if (SDValue V = lowerVectorShuffleAsElementInsertion(MVT::v4f32, DL, V1, V2,
+                                                         Mask, Subtarget, DAG))
+      return V;
+
   if (Subtarget->hasSSE41())
     if (SDValue Blend =
             lowerVectorShuffleAsBlend(DL, MVT::v4f32, V1, V2, Mask, DAG))
@@ -7627,35 +7812,25 @@ static SDValue lowerV4F32VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
       // When using INSERTPS we can zero any lane of the destination. Collect
       // the zero inputs into a mask and drop them from the lanes of V1 which
       // actually need to be present as inputs to the INSERTPS.
-      unsigned ZMask = 0;
-      if (ISD::isBuildVectorAllZeros(V1.getNode())) {
-        ZMask = 0xF ^ (1 << V2Index);
-      } else if (V1.getOpcode() == ISD::BUILD_VECTOR) {
-        for (int i = 0; i < 4; ++i) {
-          int M = Mask[i];
-          if (M >= 4)
-            continue;
-          if (M > -1) {
-            SDValue Input = V1.getOperand(M);
-            if (Input.getOpcode() != ISD::UNDEF &&
-                !X86::isZeroNode(Input)) {
-              // A non-zero input!
-              ZMask = 0;
-              break;
-            }
-          }
-          ZMask |= 1 << i;
-        }
-      }
+      SmallBitVector Zeroable = computeZeroableShuffleElements(Mask, V1, V2);
 
       // Synthesize a shuffle mask for the non-zero and non-v2 inputs.
-      int InsertShuffleMask[4] = {-1, -1, -1, -1};
+      bool InsertNeedsShuffle = false;
+      unsigned ZMask = 0;
       for (int i = 0; i < 4; ++i)
-        if (i != V2Index && (ZMask & (1 << i)) == 0)
-          InsertShuffleMask[i] = Mask[i];
+        if (i != V2Index) {
+          if (Zeroable[i]) {
+            ZMask |= 1 << i;
+          } else if (Mask[i] != i) {
+            InsertNeedsShuffle = true;
+            break;
+          }
+        }
 
-      if (isNoopShuffleMask(InsertShuffleMask)) {
-        // Replace V1 with undef if nothing from V1 survives the INSERTPS.
+      // We don't want to use INSERTPS or other insertion techniques if it will
+      // require shuffling anyways.
+      if (!InsertNeedsShuffle) {
+        // If all of V1 is zeroable, replace it with undef.
         if ((ZMask | 1 << V2Index) == 0xF)
           V1 = DAG.getUNDEF(MVT::v4f32);
 
@@ -7731,81 +7906,6 @@ static SDValue lowerV4F32VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
                      getV4X86ShuffleImm8ForMask(NewMask, DAG));
 }
 
-static SDValue lowerIntegerElementInsertionVectorShuffle(
-    MVT VT, SDLoc DL, SDValue V1, SDValue V2, ArrayRef<int> Mask,
-    const X86Subtarget *Subtarget, SelectionDAG &DAG) {
-  int V2Index = std::find_if(Mask.begin(), Mask.end(),
-                             [&Mask](int M) { return M >= (int)Mask.size(); }) -
-                Mask.begin();
-
-  // Check for a single input from a SCALAR_TO_VECTOR node.
-  // FIXME: All of this should be canonicalized into INSERT_VECTOR_ELT and
-  // all the smarts here sunk into that routine. However, the current
-  // lowering of BUILD_VECTOR makes that nearly impossible until the old
-  // vector shuffle lowering is dead.
-  if ((Mask[V2Index] == (int)Mask.size() &&
-       V2.getOpcode() == ISD::SCALAR_TO_VECTOR) ||
-      V2.getOpcode() == ISD::BUILD_VECTOR) {
-    SDValue V2S = V2.getOperand(Mask[V2Index] - Mask.size());
-
-    bool V1IsAllZero = false;
-    if (ISD::isBuildVectorAllZeros(V1.getNode())) {
-      V1IsAllZero = true;
-    } else if (V1.getOpcode() == ISD::BUILD_VECTOR) {
-      V1IsAllZero = true;
-      for (int M : Mask) {
-        if (M < 0 || M >= (int)Mask.size())
-          continue;
-        SDValue Input = V1.getOperand(M);
-        if (Input.getOpcode() != ISD::UNDEF && !X86::isZeroNode(Input)) {
-          // A non-zero input!
-          V1IsAllZero = false;
-          break;
-        }
-      }
-    }
-    if (V1IsAllZero) {
-      // First, we need to zext the scalar if it is smaller than an i32.
-      MVT EltVT = VT.getVectorElementType();
-      assert(EltVT == V2S.getSimpleValueType() &&
-             "Different scalar and element types!");
-      MVT ExtVT = VT;
-      if (EltVT == MVT::i8 || EltVT == MVT::i16) {
-        // Zero-extend directly to i32.
-        ExtVT = MVT::v4i32;
-        V2S = DAG.getNode(ISD::ZERO_EXTEND, DL, MVT::i32, V2S);
-      }
-
-      V2 = DAG.getNode(X86ISD::VZEXT_MOVL, DL, ExtVT,
-                       DAG.getNode(ISD::SCALAR_TO_VECTOR, DL, ExtVT, V2S));
-      if (ExtVT != VT)
-        V2 = DAG.getNode(ISD::BITCAST, DL, VT, V2);
-
-      if (V2Index != 0) {
-        // If we have 4 or fewer lanes we can cheaply shuffle the element into
-        // the desired position. Otherwise it is more efficient to do a vector
-        // shift left. We know that we can do a vector shift left because all
-        // the inputs are zero.
-        if (VT.getVectorNumElements() <= 4) {
-          SmallVector<int, 4> V2Shuffle(Mask.size(), 1);
-          V2Shuffle[V2Index] = 0;
-          V2 = DAG.getVectorShuffle(VT, DL, V2, DAG.getUNDEF(VT), V2Shuffle);
-        } else {
-          V2 = DAG.getNode(ISD::BITCAST, DL, MVT::v2i64, V2);
-          V2 = DAG.getNode(
-              X86ISD::VSHLDQ, DL, MVT::v2i64, V2,
-              DAG.getConstant(
-                  V2Index * EltVT.getSizeInBits(),
-                  DAG.getTargetLoweringInfo().getScalarShiftAmountTy(MVT::v2i64)));
-          V2 = DAG.getNode(ISD::BITCAST, DL, VT, V2);
-        }
-      }
-      return V2;
-    }
-  }
-  return SDValue();
-}
-
 /// \brief Lower 4-lane i32 vector shuffles.
 ///
 /// We try to handle these with integer-domain shuffles where we can, but for
@@ -7843,10 +7943,9 @@ static SDValue lowerV4I32VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
 
   // Whenever we can lower this as a zext, that instruction is strictly faster
   // than any alternative.
-  if (Subtarget->hasSSE41())
-    if (SDValue ZExt =
-            lowerVectorShuffleAsZeroExtend(DL, MVT::v4i32, V1, V2, Mask, DAG))
-      return ZExt;
+  if (SDValue ZExt = lowerVectorShuffleAsZeroOrAnyExtend(DL, MVT::v4i32, V1, V2,
+                                                         Mask, Subtarget, DAG))
+    return ZExt;
 
   // Use dedicated unpack instructions for masks that match their pattern.
   if (isShuffleEquivalent(Mask, 0, 4, 1, 5))
@@ -7856,8 +7955,8 @@ static SDValue lowerV4I32VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
 
   // There are special ways we can lower some single-element blends.
   if (NumV2Elements == 1)
-    if (SDValue V = lowerIntegerElementInsertionVectorShuffle(
-            MVT::v4i32, DL, V1, V2, Mask, Subtarget, DAG))
+    if (SDValue V = lowerVectorShuffleAsElementInsertion(MVT::v4i32, DL, V1, V2,
+                                                         Mask, Subtarget, DAG))
       return V;
 
   if (Subtarget->hasSSE41())
@@ -8519,10 +8618,9 @@ static SDValue lowerV8I16VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
 
   // Whenever we can lower this as a zext, that instruction is strictly faster
   // than any alternative.
-  if (Subtarget->hasSSE41())
-    if (SDValue ZExt = lowerVectorShuffleAsZeroExtend(DL, MVT::v8i16, V1, V2,
-                                                      OrigMask, DAG))
-      return ZExt;
+  if (SDValue ZExt = lowerVectorShuffleAsZeroOrAnyExtend(
+          DL, MVT::v8i16, V1, V2, OrigMask, Subtarget, DAG))
+    return ZExt;
 
   auto isV1 = [](int M) { return M >= 0 && M < 8; };
   auto isV2 = [](int M) { return M >= 8; };
@@ -8538,8 +8636,8 @@ static SDValue lowerV8I16VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
 
   // There are special ways we can lower some single-element blends.
   if (NumV2Inputs == 1)
-    if (SDValue V = lowerIntegerElementInsertionVectorShuffle(
-            MVT::v8i16, DL, V1, V2, Mask, Subtarget, DAG))
+    if (SDValue V = lowerVectorShuffleAsElementInsertion(MVT::v8i16, DL, V1, V2,
+                                                         Mask, Subtarget, DAG))
       return V;
 
   if (Subtarget->hasSSE41())
@@ -8688,10 +8786,9 @@ static SDValue lowerV16I8VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
       return Rotate;
 
   // Try to use a zext lowering.
-  if (Subtarget->hasSSE41())
-    if (SDValue ZExt = lowerVectorShuffleAsZeroExtend(DL, MVT::v16i8, V1, V2,
-                                                      OrigMask, DAG))
-      return ZExt;
+  if (SDValue ZExt = lowerVectorShuffleAsZeroOrAnyExtend(
+          DL, MVT::v16i8, V1, V2, OrigMask, Subtarget, DAG))
+    return ZExt;
 
   int MaskStorage[16] = {
       OrigMask[0],  OrigMask[1],  OrigMask[2],  OrigMask[3],
@@ -8855,8 +8952,8 @@ static SDValue lowerV16I8VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
 
   // There are special ways we can lower some single-element blends.
   if (NumV2Elements == 1)
-    if (SDValue V = lowerIntegerElementInsertionVectorShuffle(
-            MVT::v16i8, DL, V1, V2, Mask, Subtarget, DAG))
+    if (SDValue V = lowerVectorShuffleAsElementInsertion(MVT::v16i8, DL, V1, V2,
+                                                         Mask, Subtarget, DAG))
       return V;
 
   // Check whether a compaction lowering can be done. This handles shuffles
