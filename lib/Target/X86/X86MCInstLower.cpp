@@ -1022,15 +1022,19 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
 
   case X86::PSHUFBrm:
   case X86::VPSHUFBrm:
-    // Lower PSHUFB normally but add a comment if we can find a constant
-    // shuffle mask. We won't be able to do this at the MC layer because the
-    // mask isn't an immediate.
+  case X86::VPERMILPSrm:
+  case X86::VPERMILPDrm:
+  case X86::VPERMILPSYrm:
+  case X86::VPERMILPDYrm:
+    // Lower PSHUFB and VPERMILP normally but add a comment if we can find
+    // a constant shuffle mask. We won't be able to do this at the MC layer
+    // because the mask isn't an immediate.
     std::string Comment;
     raw_string_ostream CS(Comment);
     SmallVector<int, 16> Mask;
 
-    assert(MI->getNumOperands() >= 6 &&
-           "Wrong number of operands for PSHUFBrm or VPSHUFBrm");
+    // All of these instructions accept a constant pool operand as their fifth.
+    assert(MI->getNumOperands() > 5 && "We should always have at least 5 operands!");
     const MachineOperand &DstOp = MI->getOperand(0);
     const MachineOperand &SrcOp = MI->getOperand(1);
     const MachineOperand &MaskOp = MI->getOperand(5);
@@ -1056,14 +1060,25 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
       Type *MaskTy = MaskConstantEntry.getType();
       (void)MaskTy;
       if (!MaskConstantEntry.isMachineConstantPoolEntry())
-        if (auto *C = dyn_cast<ConstantDataSequential>(
-                MaskConstantEntry.Val.ConstVal)) {
+        if (auto *C = dyn_cast<Constant>(MaskConstantEntry.Val.ConstVal)) {
           assert(MaskTy == C->getType() &&
                  "Expected a constant of the same type!");
 
-          DecodePSHUFBMask(C, Mask);
-          assert(Mask.size() == MaskTy->getVectorNumElements() &&
-                 "Shuffle mask has a different size than its type!");
+          switch (MI->getOpcode()) {
+          case X86::PSHUFBrm:
+          case X86::VPSHUFBrm:
+            DecodePSHUFBMask(C, Mask);
+            break;
+          case X86::VPERMILPSrm:
+          case X86::VPERMILPDrm:
+          case X86::VPERMILPSYrm:
+          case X86::VPERMILPDYrm:
+            DecodeVPERMILPMask(C, Mask);
+          }
+
+          assert(
+              (Mask.empty() || Mask.size() == MaskTy->getVectorNumElements()) &&
+              "Shuffle mask has a different size than its type!");
         }
     }
 
@@ -1089,7 +1104,10 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
             InSrc = true;
             CS << SrcName << "[";
           }
-          CS << M;
+          if (M == SM_SentinelUndef)
+            CS << "u";
+          else
+            CS << M;
         }
       }
       if (InSrc)
