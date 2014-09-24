@@ -79,6 +79,13 @@ public:
                    unsigned DestReg, unsigned SrcReg,
                    bool KillSrc) const override;
 
+  unsigned calculateLDSSpillAddress(MachineBasicBlock &MBB,
+                                    MachineBasicBlock::iterator MI,
+                                    RegScavenger *RS,
+                                    unsigned TmpReg,
+                                    unsigned Offset,
+                                    unsigned Size) const;
+
   void storeRegToStackSlot(MachineBasicBlock &MBB,
                            MachineBasicBlock::iterator MI,
                            unsigned SrcReg, bool isKill, int FrameIndex,
@@ -131,6 +138,10 @@ public:
   /// \brief Return true if this 64-bit VALU instruction has a 32-bit encoding.
   /// This function will return false if you pass it a 32-bit instruction.
   bool hasVALU32BitEncoding(unsigned Opcode) const;
+
+  /// \brief Returns true if this operand uses the constant bus.
+  bool usesConstantBus(const MachineRegisterInfo &MRI,
+                       const MachineOperand &MO) const;
 
   /// \brief Return true if this instruction has any modifiers.
   ///  e.g. src[012]_mod, omod, clamp.
