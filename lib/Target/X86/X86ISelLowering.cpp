@@ -7183,6 +7183,56 @@ static bool isSingleInputShuffleMask(ArrayRef<int> Mask) {
   return true;
 }
 
+/// \brief Test whether there are elements crossing 128-bit lanes in this
+/// shuffle mask.
+///
+/// X86 divides up its shuffles into in-lane and cross-lane shuffle operations
+/// and we routinely test for these.
+static bool is128BitLaneCrossingShuffleMask(MVT VT, ArrayRef<int> Mask) {
+  int LaneSize = 128 / VT.getScalarSizeInBits();
+  int Size = Mask.size();
+  for (int i = 0; i < Size; ++i)
+    if (Mask[i] >= 0 && (Mask[i] % Size) / LaneSize != i / LaneSize)
+      return true;
+  return false;
+}
+
+/// \brief Test whether a shuffle mask is equivalent within each 128-bit lane.
+///
+/// This checks a shuffle mask to see if it is performing the same
+/// 128-bit lane-relative shuffle in each 128-bit lane. This trivially implies
+/// that it is also not lane-crossing. It may however involve a blend from the
+/// same lane of a second vector.
+///
+/// The specific repeated shuffle mask is populated in \p RepeatedMask, as it is
+/// non-trivial to compute in the face of undef lanes. The representation is
+/// *not* suitable for use with existing 128-bit shuffles as it will contain
+/// entries from both V1 and V2 inputs to the wider mask.
+static bool
+is128BitLaneRepeatedShuffleMask(MVT VT, ArrayRef<int> Mask,
+                                SmallVectorImpl<int> &RepeatedMask) {
+  int LaneSize = 128 / VT.getScalarSizeInBits();
+  RepeatedMask.resize(LaneSize, -1);
+  int Size = Mask.size();
+  for (int i = 0; i < Size; ++i) {
+    if (Mask[i] < 0)
+      continue;
+    if ((Mask[i] % Size) / LaneSize != i / LaneSize)
+      // This entry crosses lanes, so there is no way to model this shuffle.
+      return false;
+
+    // Ok, handle the in-lane shuffles by detecting if and when they repeat.
+    if (RepeatedMask[i % LaneSize] == -1)
+      // This is the first non-undef entry in this slot of a 128-bit lane.
+      RepeatedMask[i % LaneSize] =
+          Mask[i] < Size ? Mask[i] % LaneSize : Mask[i] % LaneSize + Size;
+    else if (RepeatedMask[i % LaneSize] + (i / LaneSize) * LaneSize != Mask[i])
+      // Found a mismatch with the repeated mask.
+      return false;
+  }
+  return true;
+}
+
 // Hide this symbol with an anonymous namespace instead of 'static' so that MSVC
 // 2013 will allow us to use it as a non-type template parameter.
 namespace {
@@ -7312,9 +7362,75 @@ static SDValue lowerVectorShuffleAsBlend(SDLoc DL, MVT VT, SDValue V1,
                                    DAG.getConstant(BlendMask, MVT::i8)));
   }
 
+  case MVT::v16i16: {
+    assert(Subtarget->hasAVX2() && "256-bit integer blends require AVX2!");
+    SmallVector<int, 8> RepeatedMask;
+    if (is128BitLaneRepeatedShuffleMask(MVT::v16i16, Mask, RepeatedMask)) {
+      // We can lower these with PBLENDW which is mirrored across 128-bit lanes.
+      assert(RepeatedMask.size() == 8 && "Repeated mask size doesn't match!");
+      BlendMask = 0;
+      for (int i = 0; i < 8; ++i)
+        if (RepeatedMask[i] >= 16)
+          BlendMask |= 1u << i;
+      return DAG.getNode(X86ISD::BLENDI, DL, MVT::v16i16, V1, V2,
+                         DAG.getConstant(BlendMask, MVT::i8));
+    }
+  }
+    // FALLTHROUGH
+  case MVT::v32i8: {
+    assert(Subtarget->hasAVX2() && "256-bit integer blends require AVX2!");
+    SDValue PBLENDVMask[32];
+    // Scale the blend by the number of bytes per element.
+    int Scale =  VT.getScalarSizeInBits() / 8;
+    assert(Mask.size() * Scale == 32 && "Not a 256-bit vector!");
+    for (int i = 0, Size = Mask.size(); i < Size; ++i)
+      for (int j = 0; j < Scale; ++j)
+        PBLENDVMask[Scale * i + j] =
+            Mask[i] < 0 ? DAG.getUNDEF(MVT::i8)
+                        : DAG.getConstant(Mask[i] < Size ? 0 : 0x80, MVT::i8);
+
+    V1 = DAG.getNode(ISD::BITCAST, DL, MVT::v32i8, V1);
+    V2 = DAG.getNode(ISD::BITCAST, DL, MVT::v32i8, V2);
+    return DAG.getNode(
+        ISD::BITCAST, DL, VT,
+        DAG.getNode(ISD::VSELECT, DL, MVT::v32i8,
+                    DAG.getNode(ISD::BUILD_VECTOR, DL, MVT::v32i8, PBLENDVMask),
+                    V1, V2));
+  }
+
   default:
     llvm_unreachable("Not a supported integer vector type!");
   }
+}
+
+/// \brief Generic routine to lower a shuffle and blend as a decomposed set of
+/// unblended shuffles followed by an unshuffled blend.
+///
+/// This matches the extremely common pattern for handling combined
+/// shuffle+blend operations on newer X86 ISAs where we have very fast blend
+/// operations.
+static SDValue lowerVectorShuffleAsDecomposedShuffleBlend(SDLoc DL, MVT VT,
+                                                          SDValue V1,
+                                                          SDValue V2,
+                                                          ArrayRef<int> Mask,
+                                                          SelectionDAG &DAG) {
+  // Shuffle the input elements into the desired positions in V1 and V2 and
+  // blend them together.
+  SmallVector<int, 32> V1Mask(Mask.size(), -1);
+  SmallVector<int, 32> V2Mask(Mask.size(), -1);
+  SmallVector<int, 32> BlendMask(Mask.size(), -1);
+  for (int i = 0, Size = Mask.size(); i < Size; ++i)
+    if (Mask[i] >= 0 && Mask[i] < Size) {
+      V1Mask[i] = Mask[i];
+      BlendMask[i] = i;
+    } else if (Mask[i] >= Size) {
+      V2Mask[i] = Mask[i] - Size;
+      BlendMask[i] = i + Size;
+    }
+
+  V1 = DAG.getVectorShuffle(VT, DL, V1, DAG.getUNDEF(VT), V1Mask);
+  V2 = DAG.getVectorShuffle(VT, DL, V2, DAG.getUNDEF(VT), V2Mask);
+  return DAG.getVectorShuffle(VT, DL, V1, V2, BlendMask);
 }
 
 /// \brief Try to lower a vector shuffle as a byte rotation.
@@ -9185,56 +9301,6 @@ static SDValue lower128BitVectorShuffle(SDValue Op, SDValue V1, SDValue V2,
   }
 }
 
-/// \brief Test whether there are elements crossing 128-bit lanes in this
-/// shuffle mask.
-///
-/// X86 divides up its shuffles into in-lane and cross-lane shuffle operations
-/// and we routinely test for these.
-static bool is128BitLaneCrossingShuffleMask(MVT VT, ArrayRef<int> Mask) {
-  int LaneSize = 128 / VT.getScalarSizeInBits();
-  int Size = Mask.size();
-  for (int i = 0; i < Size; ++i)
-    if (Mask[i] >= 0 && (Mask[i] % Size) / LaneSize != i / LaneSize)
-      return true;
-  return false;
-}
-
-/// \brief Test whether a shuffle mask is equivalent within each 128-bit lane.
-///
-/// This checks a shuffle mask to see if it is performing the same
-/// 128-bit lane-relative shuffle in each 128-bit lane. This trivially implies
-/// that it is also not lane-crossing. It may however involve a blend from the
-/// same lane of a second vector.
-///
-/// The specific repeated shuffle mask is populated in \p RepeatedMask, as it is
-/// non-trivial to compute in the face of undef lanes. The representation is
-/// *not* suitable for use with existing 128-bit shuffles as it will contain
-/// entries from both V1 and V2 inputs to the wider mask.
-static bool
-is128BitLaneRepeatedShuffleMask(MVT VT, ArrayRef<int> Mask,
-                                SmallVectorImpl<int> &RepeatedMask) {
-  int LaneSize = 128 / VT.getScalarSizeInBits();
-  RepeatedMask.resize(LaneSize, -1);
-  int Size = Mask.size();
-  for (int i = 0; i < Size; ++i) {
-    if (Mask[i] < 0)
-      continue;
-    if ((Mask[i] % Size) / LaneSize != i / LaneSize)
-      // This entry crosses lanes, so there is no way to model this shuffle.
-      return false;
-
-    // Ok, handle the in-lane shuffles by detecting if and when they repeat.
-    if (RepeatedMask[i % LaneSize] == -1)
-      // This is the first non-undef entry in this slot of a 128-bit lane.
-      RepeatedMask[i % LaneSize] =
-          Mask[i] < Size ? Mask[i] % LaneSize : Mask[i] % LaneSize + Size;
-    else if (RepeatedMask[i % LaneSize] + (i / LaneSize) * LaneSize != Mask[i])
-      // Found a mismatch with the repeated mask.
-      return false;
-  }
-  return true;
-}
-
 /// \brief Generic routine to split a 256-bit vector shuffle into 128-bit
 /// shuffles.
 ///
@@ -9362,26 +9428,9 @@ static SDValue lowerV4F64VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
                        DAG.getConstant(SHUFPDMask, MVT::i8));
   }
 
-  // Shuffle the input elements into the desired positions in V1 and V2 and
-  // blend them together.
-  int V1Mask[] = {-1, -1, -1, -1};
-  int V2Mask[] = {-1, -1, -1, -1};
-  for (int i = 0; i < 4; ++i)
-    if (Mask[i] >= 0 && Mask[i] < 4)
-      V1Mask[i] = Mask[i];
-    else if (Mask[i] >= 4)
-      V2Mask[i] = Mask[i] - 4;
-
-  V1 = DAG.getVectorShuffle(MVT::v4f64, DL, V1, DAG.getUNDEF(MVT::v4f64), V1Mask);
-  V2 = DAG.getVectorShuffle(MVT::v4f64, DL, V2, DAG.getUNDEF(MVT::v4f64), V2Mask);
-
-  unsigned BlendMask = 0;
-  for (int i = 0; i < 4; ++i)
-    if (Mask[i] >= 4)
-      BlendMask |= 1 << i;
-
-  return DAG.getNode(X86ISD::BLENDI, DL, MVT::v4f64, V1, V2,
-                     DAG.getConstant(BlendMask, MVT::i8));
+  // Otherwise fall back on generic blend lowering.
+  return lowerVectorShuffleAsDecomposedShuffleBlend(DL, MVT::v4f64, V1, V2,
+                                                    Mask, DAG);
 }
 
 /// \brief Handle lowering of 4-lane 64-bit integer shuffles.
@@ -9434,23 +9483,9 @@ static SDValue lowerV4I64VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
     return DAG.getNode(X86ISD::VPERMI, DL, MVT::v4i64, V1,
                        getV4X86ShuffleImm8ForMask(Mask, DAG));
 
-  // Shuffle the input elements into the desired positions in V1 and V2 and
-  // blend them together.
-  int V1Mask[] = {-1, -1, -1, -1};
-  int V2Mask[] = {-1, -1, -1, -1};
-  int BlendMask[] = {-1, -1, -1, -1};
-  for (int i = 0; i < 4; ++i)
-    if (Mask[i] >= 0 && Mask[i] < 4) {
-      V1Mask[i] = Mask[i];
-      BlendMask[i] = i;
-    } else if (Mask[i] >= 4) {
-      V2Mask[i] = Mask[i] - 4;
-      BlendMask[i] = i + 4;
-    }
-
-  V1 = DAG.getVectorShuffle(MVT::v4i64, DL, V1, DAG.getUNDEF(MVT::v4i64), V1Mask);
-  V2 = DAG.getVectorShuffle(MVT::v4i64, DL, V2, DAG.getUNDEF(MVT::v4i64), V2Mask);
-  return DAG.getVectorShuffle(MVT::v4i64, DL, V1, V2, BlendMask);
+  // Otherwise fall back on generic blend lowering.
+  return lowerVectorShuffleAsDecomposedShuffleBlend(DL, MVT::v4i64, V1, V2,
+                                                    Mask, DAG);
 }
 
 /// \brief Handle lowering of 8-lane 32-bit floating point shuffles.
@@ -9509,24 +9544,9 @@ static SDValue lowerV8F32VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
         DAG.getNode(ISD::BUILD_VECTOR, DL, MVT::v8i32, VPermMask));
   }
 
-  // Shuffle the input elements into the desired positions in V1 and V2 and
-  // blend them together.
-  int V1Mask[] = {-1, -1, -1, -1, -1, -1, -1, -1};
-  int V2Mask[] = {-1, -1, -1, -1, -1, -1, -1, -1};
-  unsigned BlendMask = 0;
-  for (int i = 0; i < 8; ++i)
-    if (Mask[i] >= 0 && Mask[i] < 8) {
-      V1Mask[i] = Mask[i];
-    } else if (Mask[i] >= 8) {
-      V2Mask[i] = Mask[i] - 8;
-      BlendMask |= 1 << i;
-    }
-
-  V1 = DAG.getVectorShuffle(MVT::v8f32, DL, V1, DAG.getUNDEF(MVT::v8f32), V1Mask);
-  V2 = DAG.getVectorShuffle(MVT::v8f32, DL, V2, DAG.getUNDEF(MVT::v8f32), V2Mask);
-
-  return DAG.getNode(X86ISD::BLENDI, DL, MVT::v8f32, V1, V2,
-                     DAG.getConstant(BlendMask, MVT::i8));
+  // Otherwise fall back on generic blend lowering.
+  return lowerVectorShuffleAsDecomposedShuffleBlend(DL, MVT::v8f32, V1, V2,
+                                                    Mask, DAG);
 }
 
 /// \brief Handle lowering of 8-lane 32-bit integer shuffles.
@@ -9559,9 +9579,9 @@ static SDValue lowerV8I32VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
                          getV4X86ShuffleImm8ForMask(RepeatedMask, DAG));
 
     // Use dedicated unpack instructions for masks that match their pattern.
-    if (isShuffleEquivalent(Mask, 0, 8, 1, 9))
+    if (isShuffleEquivalent(Mask, 0, 8, 1, 9, 4, 12, 5, 13))
       return DAG.getNode(X86ISD::UNPCKL, DL, MVT::v8i32, V1, V2);
-    if (isShuffleEquivalent(Mask, 2, 10, 3, 11))
+    if (isShuffleEquivalent(Mask, 2, 10, 3, 11, 6, 14, 7, 15))
       return DAG.getNode(X86ISD::UNPCKH, DL, MVT::v8i32, V1, V2);
   }
 
@@ -9577,23 +9597,9 @@ static SDValue lowerV8I32VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
         DAG.getNode(ISD::BUILD_VECTOR, DL, MVT::v8i32, VPermMask), V1);
   }
 
-  // Shuffle the input elements into the desired positions in V1 and V2 and
-  // blend them together.
-  int V1Mask[] = {-1, -1, -1, -1, -1, -1, -1, -1};
-  int V2Mask[] = {-1, -1, -1, -1, -1, -1, -1, -1};
-  int BlendMask[] = {-1, -1, -1, -1, -1, -1, -1, -1};
-  for (int i = 0; i < 8; ++i)
-    if (Mask[i] >= 0 && Mask[i] < 8) {
-      V1Mask[i] = Mask[i];
-      BlendMask[i] = i;
-    } else if (Mask[i] >= 8) {
-      V2Mask[i] = Mask[i] - 8;
-      BlendMask[i] = i + 8;
-    }
-
-  V1 = DAG.getVectorShuffle(MVT::v8i32, DL, V1, DAG.getUNDEF(MVT::v8i32), V1Mask);
-  V2 = DAG.getVectorShuffle(MVT::v8i32, DL, V2, DAG.getUNDEF(MVT::v8i32), V2Mask);
-  return DAG.getVectorShuffle(MVT::v8i32, DL, V1, V2, BlendMask);
+  // Otherwise fall back on generic blend lowering.
+  return lowerVectorShuffleAsDecomposedShuffleBlend(DL, MVT::v8i32, V1, V2,
+                                                    Mask, DAG);
 }
 
 /// \brief Handle lowering of 16-lane 16-bit integer shuffles.
@@ -9611,9 +9617,63 @@ static SDValue lowerV16I16VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
   assert(Mask.size() == 16 && "Unexpected mask size for v16 shuffle!");
   assert(Subtarget->hasAVX2() && "We can only lower v16i16 with AVX2!");
 
-  // FIXME: Actually implement this using AVX2!!!
-  (void)Mask;
-  return splitAndLower256BitVectorShuffle(Op, V1, V2, Subtarget, DAG);
+  // There are no generalized cross-lane shuffle operations available on i16
+  // element types.
+  // FIXME: We should teach the "split and lower" path to do something more
+  // clever, or do it ourselves here. The optimal lowering of cross-lane
+  // shuffles I am aware of is to swap the lanes into a copy, shuffle both the
+  // original and the copy, and then blend to pick up the cross-lane elements.
+  // This is four instructions with a tree height of three which is better than
+  // the worst case for a gather-cross-scatter approach such as used in SSE2
+  // v8i16 lowering (where we don't have blends). While for cross-lane blends it
+  // results in a blend tree, blends are very cheap in AVX2 and newer chips. We
+  // might also want to special case situations where we can always do a single
+  // VPERMD to produce a non-lane-crossing shuffle.
+  if (is128BitLaneCrossingShuffleMask(MVT::v16i16, Mask))
+    return splitAndLower256BitVectorShuffle(Op, V1, V2, Subtarget, DAG);
+
+  if (SDValue Blend = lowerVectorShuffleAsBlend(DL, MVT::v16i16, V1, V2, Mask,
+                                                Subtarget, DAG))
+    return Blend;
+
+  // Use dedicated unpack instructions for masks that match their pattern.
+  if (isShuffleEquivalent(Mask,
+                          // First 128-bit lane:
+                          0, 16, 1, 17, 2, 18, 3, 19,
+                          // Second 128-bit lane:
+                          8, 24, 9, 25, 10, 26, 11, 27))
+    return DAG.getNode(X86ISD::UNPCKL, DL, MVT::v16i16, V1, V2);
+  if (isShuffleEquivalent(Mask,
+                          // First 128-bit lane:
+                          4, 20, 5, 21, 6, 22, 7, 23,
+                          // Second 128-bit lane:
+                          12, 28, 13, 29, 14, 30, 15, 31))
+    return DAG.getNode(X86ISD::UNPCKH, DL, MVT::v16i16, V1, V2);
+
+  if (isSingleInputShuffleMask(Mask)) {
+    SDValue PSHUFBMask[32];
+    for (int i = 0; i < 16; ++i) {
+      if (Mask[i] == -1) {
+        PSHUFBMask[2 * i] = PSHUFBMask[2 * i + 1] = DAG.getUNDEF(MVT::i8);
+        continue;
+      }
+
+      int M = i < 8 ? Mask[i] : Mask[i] - 8;
+      assert(M >= 0 && M < 8 && "Invalid single-input mask!");
+      PSHUFBMask[2 * i] = DAG.getConstant(2 * M, MVT::i8);
+      PSHUFBMask[2 * i + 1] = DAG.getConstant(2 * M + 1, MVT::i8);
+    }
+    return DAG.getNode(
+        ISD::BITCAST, DL, MVT::v16i16,
+        DAG.getNode(
+            X86ISD::PSHUFB, DL, MVT::v32i8,
+            DAG.getNode(ISD::BITCAST, DL, MVT::v32i8, V1),
+            DAG.getNode(ISD::BUILD_VECTOR, DL, MVT::v32i8, PSHUFBMask)));
+  }
+
+  // Otherwise fall back on generic blend lowering.
+  return lowerVectorShuffleAsDecomposedShuffleBlend(DL, MVT::v16i16, V1, V2,
+                                                    Mask, DAG);
 }
 
 /// \brief Handle lowering of 32-lane 8-bit integer shuffles.
@@ -9631,9 +9691,59 @@ static SDValue lowerV32I8VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
   assert(Mask.size() == 32 && "Unexpected mask size for v32 shuffle!");
   assert(Subtarget->hasAVX2() && "We can only lower v32i8 with AVX2!");
 
-  // FIXME: Actually implement this using AVX2!!!
-  (void)Mask;
-  return splitAndLower256BitVectorShuffle(Op, V1, V2, Subtarget, DAG);
+  // There are no generalized cross-lane shuffle operations available on i16
+  // element types.
+  // FIXME: We should teach the "split and lower" path to do something more
+  // clever, or do it ourselves here. The optimal lowering of cross-lane
+  // shuffles I am aware of is to swap the lanes into a copy, shuffle both the
+  // original and the copy, and then blend to pick up the cross-lane elements.
+  // This is four instructions with a tree height of three which is better than
+  // the worst case for a gather-cross-scatter approach such as used in SSE2
+  // v8i16 lowering (where we don't have blends). While for cross-lane blends it
+  // results in a blend tree, blends are very cheap in AVX2 and newer chips. We
+  // might also want to special case situations where we can always do a single
+  // VPERMD to produce a non-lane-crossing shuffle.
+  if (is128BitLaneCrossingShuffleMask(MVT::v32i8, Mask))
+    return splitAndLower256BitVectorShuffle(Op, V1, V2, Subtarget, DAG);
+
+  if (SDValue Blend = lowerVectorShuffleAsBlend(DL, MVT::v32i8, V1, V2, Mask,
+                                                Subtarget, DAG))
+    return Blend;
+
+  // Use dedicated unpack instructions for masks that match their pattern.
+  // Note that these are repeated 128-bit lane unpacks, not unpacks across all
+  // 256-bit lanes.
+  if (isShuffleEquivalent(
+          Mask,
+          // First 128-bit lane:
+          0, 32, 1, 33, 2, 34, 3, 35, 4, 36, 5, 37, 6, 38, 7, 39,
+          // Second 128-bit lane:
+          16, 48, 17, 49, 18, 50, 19, 51, 20, 52, 21, 53, 22, 54, 23, 55))
+    return DAG.getNode(X86ISD::UNPCKL, DL, MVT::v32i8, V1, V2);
+  if (isShuffleEquivalent(
+          Mask,
+          // First 128-bit lane:
+          8, 40, 9, 41, 10, 42, 11, 43, 12, 44, 13, 45, 14, 46, 15, 47,
+          // Second 128-bit lane:
+          24, 56, 25, 57, 26, 58, 27, 59, 28, 60, 29, 61, 30, 62, 31, 63))
+    return DAG.getNode(X86ISD::UNPCKH, DL, MVT::v32i8, V1, V2);
+
+  if (isSingleInputShuffleMask(Mask)) {
+    SDValue PSHUFBMask[32];
+    for (int i = 0; i < 32; ++i)
+      PSHUFBMask[i] =
+          Mask[i] < 0
+              ? DAG.getUNDEF(MVT::i8)
+              : DAG.getConstant(Mask[i] < 16 ? Mask[i] : Mask[i] - 16, MVT::i8);
+
+    return DAG.getNode(
+        X86ISD::PSHUFB, DL, MVT::v32i8, V1,
+        DAG.getNode(ISD::BUILD_VECTOR, DL, MVT::v32i8, PSHUFBMask));
+  }
+
+  // Otherwise fall back on generic blend lowering.
+  return lowerVectorShuffleAsDecomposedShuffleBlend(DL, MVT::v32i8, V1, V2,
+                                                    Mask, DAG);
 }
 
 /// \brief High-level routine to lower various 256-bit x86 vector shuffles.
@@ -18226,7 +18336,6 @@ const char *X86TargetLowering::getTargetNodeName(unsigned Opcode) const {
   case X86ISD::PSHUFB:             return "X86ISD::PSHUFB";
   case X86ISD::ANDNP:              return "X86ISD::ANDNP";
   case X86ISD::PSIGN:              return "X86ISD::PSIGN";
-  case X86ISD::BLENDV:             return "X86ISD::BLENDV";
   case X86ISD::BLENDI:             return "X86ISD::BLENDI";
   case X86ISD::SUBUS:              return "X86ISD::SUBUS";
   case X86ISD::HADD:               return "X86ISD::HADD";
