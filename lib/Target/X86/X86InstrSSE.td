@@ -865,6 +865,7 @@ let canFoldAsLoad = 1, isReMaterializable = IsReMaterializable in
            Sched<[WriteLoad]>;
 }
 
+let Predicates = [HasAVX, NoVLX] in {
 defm VMOVAPS : sse12_mov_packed<0x28, VR128, f128mem, alignedloadv4f32,
                               "movaps", SSEPackedSingle, SSE_MOVA_ITINS>,
                               PS, VEX;
@@ -890,20 +891,26 @@ defm VMOVUPSY : sse12_mov_packed<0x10, VR256, f256mem, loadv8f32,
 defm VMOVUPDY : sse12_mov_packed<0x10, VR256, f256mem, loadv4f64,
                               "movupd", SSEPackedDouble, SSE_MOVU_ITINS, 0>,
                               PD, VEX, VEX_L;
+}
+
+let Predicates = [UseSSE1] in {
 defm MOVAPS : sse12_mov_packed<0x28, VR128, f128mem, alignedloadv4f32,
                               "movaps", SSEPackedSingle, SSE_MOVA_ITINS>,
                               PS;
-defm MOVAPD : sse12_mov_packed<0x28, VR128, f128mem, alignedloadv2f64,
-                              "movapd", SSEPackedDouble, SSE_MOVA_ITINS>,
-                              PD;
 defm MOVUPS : sse12_mov_packed<0x10, VR128, f128mem, loadv4f32,
                               "movups", SSEPackedSingle, SSE_MOVU_ITINS>,
                               PS;
+}
+let Predicates = [UseSSE2] in {
+defm MOVAPD : sse12_mov_packed<0x28, VR128, f128mem, alignedloadv2f64,
+                              "movapd", SSEPackedDouble, SSE_MOVA_ITINS>,
+                              PD;
 defm MOVUPD : sse12_mov_packed<0x10, VR128, f128mem, loadv2f64,
                               "movupd", SSEPackedDouble, SSE_MOVU_ITINS, 0>,
                               PD;
+}
 
-let SchedRW = [WriteStore] in {
+let SchedRW = [WriteStore], Predicates = [HasAVX, NoVLX]  in {
 def VMOVAPSmr : VPSI<0x29, MRMDestMem, (outs), (ins f128mem:$dst, VR128:$src),
                    "movaps\t{$src, $dst|$dst, $src}",
                    [(alignedstore (v4f32 VR128:$src), addr:$dst)],
@@ -1047,7 +1054,7 @@ let Predicates = [UseSSE2] in
             (MOVUPDmr addr:$dst, VR128:$src)>;
 
 // Use vmovaps/vmovups for AVX integer load/store.
-let Predicates = [HasAVX] in {
+let Predicates = [HasAVX, NoVLX] in {
   // 128-bit load/store
   def : Pat<(alignedloadv2i64 addr:$src),
             (VMOVAPSrm addr:$src)>;
@@ -3337,6 +3344,16 @@ def SSE_SQRTSD : OpndItins<
 >;
 }
 
+let Sched = WriteFRsqrt in {
+def SSE_RSQRTPS : OpndItins<
+  IIC_SSE_RSQRTPS_RR, IIC_SSE_RSQRTPS_RM
+>;
+
+def SSE_RSQRTSS : OpndItins<
+  IIC_SSE_RSQRTSS_RR, IIC_SSE_RSQRTSS_RM
+>;
+}
+
 let Sched = WriteFRcp in {
 def SSE_RCPP : OpndItins<
   IIC_SSE_RCPP_RR, IIC_SSE_RCPP_RM
@@ -3615,10 +3632,10 @@ defm SQRT  : sse1_fp_unop_s<0x51, "sqrt",  fsqrt, int_x86_sse_sqrt_ss,
 
 // Reciprocal approximations. Note that these typically require refinement
 // in order to obtain suitable precision.
-defm RSQRT : sse1_fp_unop_rw<0x52, "rsqrt", X86frsqrt, SSE_SQRTSS>,
-             sse1_fp_unop_p<0x52, "rsqrt", X86frsqrt, SSE_SQRTPS>,
+defm RSQRT : sse1_fp_unop_rw<0x52, "rsqrt", X86frsqrt, SSE_RSQRTSS>,
+             sse1_fp_unop_p<0x52, "rsqrt", X86frsqrt, SSE_RSQRTPS>,
              sse1_fp_unop_p_int<0x52, "rsqrt", int_x86_sse_rsqrt_ps,
-                                int_x86_avx_rsqrt_ps_256, SSE_SQRTPS>;
+                                int_x86_avx_rsqrt_ps_256, SSE_RSQRTPS>;
 defm RCP   : sse1_fp_unop_rw<0x53, "rcp", X86frcp, SSE_RCPS>,
              sse1_fp_unop_p<0x53, "rcp", X86frcp, SSE_RCPP>,
              sse1_fp_unop_p_int<0x53, "rcp", int_x86_sse_rcp_ps,

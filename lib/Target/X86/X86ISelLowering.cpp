@@ -7939,7 +7939,7 @@ static SDValue lowerV2I64VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
 /// This is a helper routine dedicated to lowering vector shuffles using SHUFPS.
 /// It makes no assumptions about whether this is the *best* lowering, it simply
 /// uses it.
-static SDValue lowerVectorShuffleWithSHUPFS(SDLoc DL, MVT VT,
+static SDValue lowerVectorShuffleWithSHUFPS(SDLoc DL, MVT VT,
                                             ArrayRef<int> Mask, SDValue V1,
                                             SDValue V2, SelectionDAG &DAG) {
   SDValue LowV = V1, HighV = V2;
@@ -7986,9 +7986,17 @@ static SDValue lowerVectorShuffleWithSHUPFS(SDLoc DL, MVT VT,
   } else if (NumV2Elements == 2) {
     if (Mask[0] < 4 && Mask[1] < 4) {
       // Handle the easy case where we have V1 in the low lanes and V2 in the
-      // high lanes. We never see this reversed because we sort the shuffle.
+      // high lanes.
       NewMask[2] -= 4;
       NewMask[3] -= 4;
+    } else if (Mask[2] < 4 && Mask[3] < 4) {
+      // We also handle the reversed case because this utility may get called
+      // when we detect a SHUFPS pattern but can't easily commute the shuffle to
+      // arrange things in the right direction.
+      NewMask[0] -= 4;
+      NewMask[1] -= 4;
+      HighV = V1;
+      LowV = V2;
     } else {
       // We have a mixture of V1 and V2 in both low and high lanes. Rather than
       // trying to place elements directly, just blend them and set up the final
@@ -8114,7 +8122,7 @@ static SDValue lowerV4F32VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
   }
 
   // Otherwise fall back to a SHUFPS lowering strategy.
-  return lowerVectorShuffleWithSHUPFS(DL, MVT::v4f32, Mask, V1, V2, DAG);
+  return lowerVectorShuffleWithSHUFPS(DL, MVT::v4f32, Mask, V1, V2, DAG);
 }
 
 /// \brief Lower 4-lane i32 vector shuffles.
@@ -9088,11 +9096,16 @@ static SDValue lowerV16I8VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
                        MVT::v16i8, V1, V1);
 
       int PostDupI16Shuffle[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
-      for (int i = 0; i < 16; i += 2) {
-        if (Mask[i] != -1)
-          PostDupI16Shuffle[i / 2] = LaneMap[Mask[i]] - (TargetLo ? 0 : 8);
-        assert(PostDupI16Shuffle[i / 2] < 8 && "Invalid v8 shuffle mask!");
-      }
+      for (int i = 0; i < 16; ++i)
+        if (Mask[i] != -1) {
+          int MappedMask = LaneMap[Mask[i]] - (TargetLo ? 0 : 8);
+          assert(MappedMask < 8 && "Invalid v8 shuffle mask!");
+          if (PostDupI16Shuffle[i / 2] == -1)
+            PostDupI16Shuffle[i / 2] = MappedMask;
+          else
+            assert(PostDupI16Shuffle[i / 2] == MappedMask &&
+                   "Conflicting entrties in the original shuffle!");
+        }
       return DAG.getNode(
           ISD::BITCAST, DL, MVT::v16i8,
           DAG.getVectorShuffle(MVT::v8i16, DL,
@@ -9392,7 +9405,7 @@ static SDValue lowerVectorShuffleAsLanePermuteAndBlend(SDLoc DL, MVT VT,
     SmallVector<int, 32> FlippedBlendMask;
     for (int i = 0, Size = Mask.size(); i < Size; ++i)
       FlippedBlendMask.push_back(
-          Mask[i] < 0 ? -1 : ((Mask[i] / LaneSize == i / LaneSize)
+          Mask[i] < 0 ? -1 : (((Mask[i] % Size) / LaneSize == i / LaneSize)
                                   ? Mask[i]
                                   : Mask[i] % LaneSize +
                                         (i / LaneSize) * LaneSize + Size));
@@ -9469,15 +9482,19 @@ static SDValue lowerV4F64VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
     return Blend;
 
   // Check if the blend happens to exactly fit that of SHUFPD.
-  if (Mask[0] < 4 && (Mask[1] == -1 || Mask[1] >= 4) &&
-      Mask[2] < 4 && (Mask[3] == -1 || Mask[3] >= 4)) {
+  if ((Mask[0] == -1 || Mask[0] < 2) &&
+      (Mask[1] == -1 || (Mask[1] >= 4 && Mask[1] < 6)) &&
+      (Mask[2] == -1 || (Mask[2] >= 2 && Mask[2] < 4)) &&
+      (Mask[3] == -1 || Mask[3] >= 6)) {
     unsigned SHUFPDMask = (Mask[0] == 1) | ((Mask[1] == 5) << 1) |
                           ((Mask[2] == 3) << 2) | ((Mask[3] == 7) << 3);
     return DAG.getNode(X86ISD::SHUFP, DL, MVT::v4f64, V1, V2,
                        DAG.getConstant(SHUFPDMask, MVT::i8));
   }
-  if ((Mask[0] == -1 || Mask[0] >= 4) && Mask[1] < 4 &&
-      (Mask[2] == -1 || Mask[2] >= 4) && Mask[3] < 4) {
+  if ((Mask[0] == -1 || (Mask[0] >= 4 && Mask[0] < 6)) &&
+      (Mask[1] == -1 || Mask[1] < 2) &&
+      (Mask[2] == -1 || Mask[2] >= 6) &&
+      (Mask[3] == -1 || (Mask[3] >= 2 && Mask[3] < 4))) {
     unsigned SHUFPDMask = (Mask[0] == 5) | ((Mask[1] == 1) << 1) |
                           ((Mask[2] == 7) << 2) | ((Mask[3] == 3) << 3);
     return DAG.getNode(X86ISD::SHUFP, DL, MVT::v4f64, V2, V1,
@@ -9564,8 +9581,10 @@ static SDValue lowerV8F32VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
 
   // If the shuffle mask is repeated in each 128-bit lane, we have many more
   // options to efficiently lower the shuffle.
-  SmallVector<int, 2> RepeatedMask;
+  SmallVector<int, 4> RepeatedMask;
   if (is128BitLaneRepeatedShuffleMask(MVT::v8f32, Mask, RepeatedMask)) {
+    assert(RepeatedMask.size() == 4 &&
+           "Repeated masks must be half the mask width!");
     if (isSingleInputShuffleMask(Mask))
       return DAG.getNode(X86ISD::VPERMILPI, DL, MVT::v8f32, V1,
                          getV4X86ShuffleImm8ForMask(RepeatedMask, DAG));
@@ -9577,12 +9596,12 @@ static SDValue lowerV8F32VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
       return DAG.getNode(X86ISD::UNPCKH, DL, MVT::v8f32, V1, V2);
 
     // Otherwise, fall back to a SHUFPS sequence. Here it is important that we
-    // have already handled any direct blends.
-    int SHUFPSMask[] = {Mask[0], Mask[1], Mask[2], Mask[3]};
-    for (int &M : SHUFPSMask)
-      if (M >= 8)
-        M -= 4;
-    return lowerVectorShuffleWithSHUPFS(DL, MVT::v8f32, SHUFPSMask, V1, V2, DAG);
+    // have already handled any direct blends. We also need to squash the
+    // repeated mask into a simulated v4f32 mask.
+    for (int i = 0; i < 4; ++i)
+      if (RepeatedMask[i] >= 8)
+        RepeatedMask[i] -= 4;
+    return lowerVectorShuffleWithSHUFPS(DL, MVT::v8f32, RepeatedMask, V1, V2, DAG);
   }
 
   // If we have a single input shuffle with different shuffle patterns in the
@@ -9844,14 +9863,48 @@ static SDValue lower256BitVectorShuffle(SDValue Op, SDValue V1, SDValue V2,
   }
 }
 
-/// \brief Tiny helper function to test whether a shuffle mask could be
+/// \brief Helper function to test whether a shuffle mask could be
 /// simplified by widening the elements being shuffled.
-static bool canWidenShuffleElements(ArrayRef<int> Mask) {
-  for (int i = 0, Size = Mask.size(); i < Size; i += 2)
-    if ((Mask[i] != -1 && Mask[i] % 2 != 0) ||
-        (Mask[i + 1] != -1 && (Mask[i + 1] % 2 != 1 ||
-                               (Mask[i] != -1 && Mask[i] + 1 != Mask[i + 1]))))
-      return false;
+///
+/// Appends the mask for wider elements in WidenedMask if valid. Otherwise
+/// leaves it in an unspecified state.
+///
+/// NOTE: This must handle normal vector shuffle masks and *target* vector
+/// shuffle masks. The latter have the special property of a '-2' representing
+/// a zero-ed lane of a vector.
+static bool canWidenShuffleElements(ArrayRef<int> Mask,
+                                    SmallVectorImpl<int> &WidenedMask) {
+  for (int i = 0, Size = Mask.size(); i < Size; i += 2) {
+    // Check for any of the sentinel values (negative) and if they are the same,
+    // we can widen to that.
+    if (Mask[i] < 0 && Mask[i] == Mask[i + 1]) {
+      WidenedMask.push_back(Mask[i]);
+      continue;
+    }
+
+    // Check for an undef mask and a mask value properly aligned to fit with
+    // a pair of values. If we find such a case, use the non-undef mask's value.
+    if (Mask[i] == -1 && Mask[i + 1] >= 0 && Mask[i + 1] % 2 == 1) {
+      WidenedMask.push_back(Mask[i + 1] / 2);
+      continue;
+    }
+    if (Mask[i + 1] == -1 && Mask[i] >= 0 && Mask[i] % 2 == 0) {
+      WidenedMask.push_back(Mask[i] / 2);
+      continue;
+    }
+
+    // Finally check if the two mask values are adjacent and aligned with
+    // a pair.
+    if (Mask[i] != -1 && Mask[i] % 2 == 0 && Mask[i] + 1 == Mask[i + 1]) {
+      WidenedMask.push_back(Mask[i] / 2);
+      continue;
+    }
+
+    // Otherwise we can't safely widen the elements used in this shuffle.
+    return false;
+  }
+  assert(WidenedMask.size() == Mask.size() / 2 &&
+         "Incorrect size of mask after widening the elements!");
 
   return true;
 }
@@ -9903,20 +9956,16 @@ static SDValue lowerVectorShuffle(SDValue Op, const X86Subtarget *Subtarget,
   // lanes but wider integers. We cap this to not form integers larger than i64
   // but it might be interesting to form i128 integers to handle flipping the
   // low and high halves of AVX 256-bit vectors.
+  SmallVector<int, 16> WidenedMask;
   if (VT.isInteger() && VT.getScalarSizeInBits() < 64 &&
-      canWidenShuffleElements(Mask)) {
-    SmallVector<int, 8> NewMask;
-    for (int i = 0, Size = Mask.size(); i < Size; i += 2)
-      NewMask.push_back(Mask[i] != -1
-                            ? Mask[i] / 2
-                            : (Mask[i + 1] != -1 ? Mask[i + 1] / 2 : -1));
+      canWidenShuffleElements(Mask, WidenedMask)) {
     MVT NewVT =
         MVT::getVectorVT(MVT::getIntegerVT(VT.getScalarSizeInBits() * 2),
                          VT.getVectorNumElements() / 2);
     V1 = DAG.getNode(ISD::BITCAST, dl, NewVT, V1);
     V2 = DAG.getNode(ISD::BITCAST, dl, NewVT, V2);
     return DAG.getNode(ISD::BITCAST, dl, VT,
-                       DAG.getVectorShuffle(NewVT, dl, V1, V2, NewMask));
+                       DAG.getVectorShuffle(NewVT, dl, V1, V2, WidenedMask));
   }
 
   int NumV1Elements = 0, NumUndefElements = 0, NumV2Elements = 0;
@@ -9945,17 +9994,18 @@ static SDValue lowerVectorShuffle(SDValue Op, const X86Subtarget *Subtarget,
         ++LowV2Elements;
       else if (M >= 0)
         ++LowV1Elements;
-    if (LowV2Elements > LowV1Elements)
+    if (LowV2Elements > LowV1Elements) {
       return DAG.getCommutedVectorShuffle(*SVOp);
-
-    int SumV1Indices = 0, SumV2Indices = 0;
-    for (int i = 0, Size = SVOp->getMask().size(); i < Size; ++i)
-      if (SVOp->getMask()[i] >= NumElements)
-        SumV2Indices += i;
-      else if (SVOp->getMask()[i] >= 0)
-        SumV1Indices += i;
-    if (SumV2Indices < SumV1Indices)
-      return DAG.getCommutedVectorShuffle(*SVOp);
+    } else if (LowV2Elements == LowV1Elements) {
+      int SumV1Indices = 0, SumV2Indices = 0;
+      for (int i = 0, Size = SVOp->getMask().size(); i < Size; ++i)
+        if (SVOp->getMask()[i] >= NumElements)
+          SumV2Indices += i;
+        else if (SVOp->getMask()[i] >= 0)
+          SumV1Indices += i;
+      if (SumV2Indices < SumV1Indices)
+        return DAG.getCommutedVectorShuffle(*SVOp);
+    }
   }
 
   // For each vector width, delegate to a specialized lowering routine.
@@ -20677,10 +20727,10 @@ static bool combineX86ShufflesRecursively(SDValue Op, SDValue Root,
   // elements, and shrink them to the half-width mask. It does this in a loop
   // so it will reduce the size of the mask to the minimal width mask which
   // performs an equivalent shuffle.
-  while (Mask.size() > 1 && canWidenShuffleElements(Mask)) {
-    for (int i = 0, e = Mask.size() / 2; i < e; ++i)
-      Mask[i] = Mask[2 * i] / 2;
-    Mask.resize(Mask.size() / 2);
+  SmallVector<int, 16> WidenedMask;
+  while (Mask.size() > 1 && canWidenShuffleElements(Mask, WidenedMask)) {
+    Mask = std::move(WidenedMask);
+    WidenedMask.clear();
   }
 
   return combineX86ShuffleChain(Op, Root, Mask, Depth, HasPSHUFB, DAG, DCI,
@@ -20951,12 +21001,13 @@ static SDValue PerformTargetShuffleCombine(SDValue N, SelectionDAG &DAG,
       return SDValue(); // We combined away this shuffle, so we're done.
 
     // See if this reduces to a PSHUFD which is no more expensive and can
-    // combine with more operations.
-    if (canWidenShuffleElements(Mask)) {
-      int DMask[] = {-1, -1, -1, -1};
+    // combine with more operations. Note that it has to at least flip the
+    // dwords as otherwise it would have been removed as a no-op.
+    if (Mask[0] == 2 && Mask[1] == 3 && Mask[2] == 0 && Mask[3]) {
+      int DMask[] = {0, 1, 2, 3};
       int DOffset = N.getOpcode() == X86ISD::PSHUFLW ? 0 : 2;
-      DMask[DOffset + 0] = DOffset + Mask[0] / 2;
-      DMask[DOffset + 1] = DOffset + Mask[2] / 2;
+      DMask[DOffset + 0] = DOffset + 1;
+      DMask[DOffset + 1] = DOffset + 0;
       V = DAG.getNode(ISD::BITCAST, DL, MVT::v4i32, V);
       DCI.AddToWorklist(V.getNode());
       V = DAG.getNode(X86ISD::PSHUFD, DL, MVT::v4i32, V,
