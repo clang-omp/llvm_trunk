@@ -171,6 +171,7 @@ DwarfDebug::DwarfDebug(AsmPrinter *A, Module *M)
       GlobalRangeCount(0), InfoHolder(A, "info_string", DIEValueAllocator),
       UsedNonDefaultText(false),
       SkeletonHolder(A, "skel_string", DIEValueAllocator),
+      IsDarwin(Triple(A->getTargetTriple()).isOSDarwin()),
       AccelNames(DwarfAccelTable::Atom(dwarf::DW_ATOM_die_offset,
                                        dwarf::DW_FORM_data4)),
       AccelObjC(DwarfAccelTable::Atom(dwarf::DW_ATOM_die_offset,
@@ -190,8 +191,6 @@ DwarfDebug::DwarfDebug(AsmPrinter *A, Module *M)
 
   // Turn on accelerator tables for Darwin by default, pubnames by
   // default for non-Darwin, and handle split dwarf.
-  bool IsDarwin = Triple(A->getTargetTriple()).isOSDarwin();
-
   if (DwarfAccelTables == Default)
     HasDwarfAccelTables = IsDarwin;
   else
@@ -318,6 +317,8 @@ DIE &DwarfDebug::updateSubprogramScopeDIE(DwarfCompileUnit &SPCU,
   DIE *SPDie = SPCU.getOrCreateSubprogramDIE(SP);
 
   attachLowHighPC(SPCU, *SPDie, FunctionBeginSym, FunctionEndSym);
+  if (!CurFn->getTarget().Options.DisableFramePointerElim(*CurFn))
+    SPCU.addFlag(*SPDie, dwarf::DW_AT_APPLE_omit_frame_ptr);
 
   // Only include DW_AT_frame_base in full debug info
   if (SPCU.getCUNode().getEmissionKind() != DIBuilder::LineTablesOnly) {
@@ -530,7 +531,7 @@ void DwarfDebug::constructAbstractSubprogramScopeDIE(DwarfCompileUnit &TheCU,
     SPCU.addDIEEntry(*AbsDef, dwarf::DW_AT_object_pointer, *ObjectPointer);
 }
 
-DIE &DwarfDebug::constructSubprogramScopeDIE(DwarfCompileUnit &TheCU,
+void DwarfDebug::constructSubprogramScopeDIE(DwarfCompileUnit &TheCU,
                                              LexicalScope *Scope) {
   assert(Scope && Scope->getScopeNode());
   assert(!Scope->getInlinedAt());
@@ -570,8 +571,6 @@ DIE &DwarfDebug::constructSubprogramScopeDIE(DwarfCompileUnit &TheCU,
 
   if (ObjectPointer)
     TheCU.addDIEEntry(ScopeDIE, dwarf::DW_AT_object_pointer, *ObjectPointer);
-
-  return ScopeDIE;
 }
 
 // Construct a DIE for this scope.
@@ -1698,7 +1697,7 @@ void DwarfDebug::endFunction(const MachineFunction *MF) {
   // Under -gmlt, skip building the subprogram if there are no inlined
   // subroutines inside it.
   if (TheCU.getCUNode().getEmissionKind() == DIBuilder::LineTablesOnly &&
-      LScopes.getAbstractScopesList().empty()) {
+      LScopes.getAbstractScopesList().empty() && !IsDarwin) {
     assert(ScopeVariables.empty());
     assert(CurrentFnArguments.empty());
     assert(DbgValues.empty());
@@ -1726,9 +1725,7 @@ void DwarfDebug::endFunction(const MachineFunction *MF) {
     constructAbstractSubprogramScopeDIE(TheCU, AScope);
   }
 
-  DIE &CurFnDIE = constructSubprogramScopeDIE(TheCU, FnScope);
-  if (!CurFn->getTarget().Options.DisableFramePointerElim(*CurFn))
-    TheCU.addFlag(CurFnDIE, dwarf::DW_AT_APPLE_omit_frame_ptr);
+  constructSubprogramScopeDIE(TheCU, FnScope);
 
   // Clear debug info
   // Ownership of DbgVariables is a bit subtle - ScopeVariables owns all the
