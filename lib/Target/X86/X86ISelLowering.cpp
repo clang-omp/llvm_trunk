@@ -7738,6 +7738,17 @@ static SDValue lowerVectorShuffleAsZeroOrAnyExtend(
   return SDValue();
 }
 
+/// \brief Try to get a scalar value for a specific element of a vector.
+///
+/// Looks through BUILD_VECTOR and SCALAR_TO_VECTOR nodes to find a scalar.
+static SDValue getScalarValueForVectorElement(SDValue V, int Idx) {
+  if (V.getOpcode() == ISD::BUILD_VECTOR ||
+      (Idx == 0 && V.getOpcode() == ISD::SCALAR_TO_VECTOR))
+    return V.getOperand(Idx);
+
+  return SDValue();
+}
+
 /// \brief Try to lower insertion of a single element into a zero vector.
 ///
 /// This is a common pattern that we have especially efficient patterns to lower
@@ -7768,24 +7779,14 @@ static SDValue lowerVectorShuffleAsElementInsertion(
         return SDValue(); // Not inserting into a zero vector.
   }
 
-  // Step over any bitcasts on either input so we can scan the actual
-  // BUILD_VECTOR nodes.
-  while (V1.getOpcode() == ISD::BITCAST)
-    V1 = V1.getOperand(0);
-  while (V2.getOpcode() == ISD::BITCAST)
-    V2 = V2.getOperand(0);
-
   // Check for a single input from a SCALAR_TO_VECTOR node.
   // FIXME: All of this should be canonicalized into INSERT_VECTOR_ELT and
   // all the smarts here sunk into that routine. However, the current
   // lowering of BUILD_VECTOR makes that nearly impossible until the old
   // vector shuffle lowering is dead.
-  if (!((V2.getOpcode() == ISD::SCALAR_TO_VECTOR &&
-         Mask[V2Index] == (int)Mask.size()) ||
-        V2.getOpcode() == ISD::BUILD_VECTOR))
+  SDValue V2S = getScalarValueForVectorElement(V2, Mask[V2Index] - Mask.size());
+  if (!V2S)
     return SDValue();
-
-  SDValue V2S = V2.getOperand(Mask[V2Index] - Mask.size());
 
   // First, we need to zext the scalar if it is smaller than an i32.
   MVT ExtVT = VT;
@@ -7822,6 +7823,51 @@ static SDValue lowerVectorShuffleAsElementInsertion(
     }
   }
   return V2;
+}
+
+/// \brief Try to lower broadcast of a single element.
+///
+/// For convenience, this code also bundles all of the subtarget feature set
+/// filtering. While a little annoying to re-dispatch on type here, there isn't
+/// a convenient way to factor it out.
+static SDValue lowerVectorShuffleAsBroadcast(MVT VT, SDLoc DL, SDValue V,
+                                             ArrayRef<int> Mask,
+                                             const X86Subtarget *Subtarget,
+                                             SelectionDAG &DAG) {
+  if (!Subtarget->hasAVX())
+    return SDValue();
+  if (VT.isInteger() && !Subtarget->hasAVX2())
+    return SDValue();
+
+  // Check that the mask is a broadcast.
+  int BroadcastIdx = -1;
+  for (int M : Mask)
+    if (M >= 0 && BroadcastIdx == -1)
+      BroadcastIdx = M;
+    else if (M >= 0 && M != BroadcastIdx)
+      return SDValue();
+
+  assert(BroadcastIdx < (int)Mask.size() && "We only expect to be called with "
+                                            "a sorted mask where the broadcast "
+                                            "comes from V1.");
+
+  // Check if this is a broadcast of a scalar. We special case lowering for
+  // scalars so that we can more effectively fold with loads.
+  if (V.getOpcode() == ISD::BUILD_VECTOR ||
+        (V.getOpcode() == ISD::SCALAR_TO_VECTOR && BroadcastIdx == 0)) {
+    V = V.getOperand(BroadcastIdx);
+
+    // If the scalar isn't a load we can't broadcast from it in AVX1, only with
+    // AVX2.
+    if (!Subtarget->hasAVX2() && !ISD::isNON_EXTLoad(V.getNode()))
+      return SDValue();
+  } else if (BroadcastIdx != 0 || !Subtarget->hasAVX2()) {
+    // We can't broadcast from a vector register w/o AVX2, and we can only
+    // broadcast from the zero-element of a vector register.
+    return SDValue();
+  }
+
+  return DAG.getNode(X86ISD::VBROADCAST, DL, VT, V);
 }
 
 /// \brief Handle lowering of 2-lane 64-bit floating point shuffles.
@@ -7872,6 +7918,16 @@ static SDValue lowerV2F64VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
             MVT::v2f64, DL, V1, V2, Mask, Subtarget, DAG))
       return Insertion;
 
+  // Try to use one of the special instruction patterns to handle two common
+  // blend patterns if a zero-blend above didn't work.
+  if (isShuffleEquivalent(Mask, 0, 3) || isShuffleEquivalent(Mask, 1, 3))
+    if (SDValue V1S = getScalarValueForVectorElement(V1, Mask[0]))
+      // We can either use a special instruction to load over the low double or
+      // to move just the low double.
+      return DAG.getNode(ISD::isNON_EXTLoad(V1S.getNode()) ? X86ISD::MOVLPD
+                                                           : X86ISD::MOVSD,
+                         DL, MVT::v2f64, V2, V1S);
+
   if (Subtarget->hasSSE41())
     if (SDValue Blend = lowerVectorShuffleAsBlend(DL, MVT::v2f64, V1, V2, Mask,
                                                   Subtarget, DAG))
@@ -7900,6 +7956,11 @@ static SDValue lowerV2I64VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
   assert(Mask.size() == 2 && "Unexpected mask size for v2 shuffle!");
 
   if (isSingleInputShuffleMask(Mask)) {
+    // Check for being able to broadcast a single element.
+    if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(MVT::v2i64, DL, V1,
+                                                          Mask, Subtarget, DAG))
+      return Broadcast;
+
     // Straight shuffle of a single input vector. For everything from SSE2
     // onward this has a single fast instruction with no scary immediates.
     // We have to map the mask as it is actually a v4i32 shuffle instruction.
@@ -8057,6 +8118,11 @@ static SDValue lowerV4F32VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
       std::count_if(Mask.begin(), Mask.end(), [](int M) { return M >= 4; });
 
   if (NumV2Elements == 0) {
+    // Check for being able to broadcast a single element.
+    if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(MVT::v4f32, DL, V1,
+                                                          Mask, Subtarget, DAG))
+      return Broadcast;
+
     if (Subtarget->hasAVX()) {
       // If we have AVX, we can use VPERMILPS which will allow folding a load
       // into the shuffle.
@@ -8153,10 +8219,22 @@ static SDValue lowerV4I32VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
   ArrayRef<int> Mask = SVOp->getMask();
   assert(Mask.size() == 4 && "Unexpected mask size for v4 shuffle!");
 
+  // Whenever we can lower this as a zext, that instruction is strictly faster
+  // than any alternative. It also allows us to fold memory operands into the
+  // shuffle in many cases.
+  if (SDValue ZExt = lowerVectorShuffleAsZeroOrAnyExtend(DL, MVT::v4i32, V1, V2,
+                                                         Mask, Subtarget, DAG))
+    return ZExt;
+
   int NumV2Elements =
       std::count_if(Mask.begin(), Mask.end(), [](int M) { return M >= 4; });
 
   if (NumV2Elements == 0) {
+    // Check for being able to broadcast a single element.
+    if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(MVT::v4i32, DL, V1,
+                                                          Mask, Subtarget, DAG))
+      return Broadcast;
+
     // Straight shuffle of a single input vector. For everything from SSE2
     // onward this has a single fast instruction with no scary immediates.
     // We coerce the shuffle pattern to be compatible with UNPCK instructions
@@ -8172,12 +8250,6 @@ static SDValue lowerV4I32VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
     return DAG.getNode(X86ISD::PSHUFD, DL, MVT::v4i32, V1,
                        getV4X86ShuffleImm8ForMask(Mask, DAG));
   }
-
-  // Whenever we can lower this as a zext, that instruction is strictly faster
-  // than any alternative.
-  if (SDValue ZExt = lowerVectorShuffleAsZeroOrAnyExtend(DL, MVT::v4i32, V1, V2,
-                                                         Mask, Subtarget, DAG))
-    return ZExt;
 
   // Use dedicated unpack instructions for masks that match their pattern.
   if (isShuffleEquivalent(Mask, 0, 4, 1, 5))
@@ -8252,6 +8324,11 @@ static SDValue lowerV8I16SingleInputVectorShuffle(
   MutableArrayRef<int> LToHInputs(HiInputs.data(), NumLToH);
   MutableArrayRef<int> HToLInputs(LoInputs.data() + NumLToL, NumHToL);
   MutableArrayRef<int> HToHInputs(HiInputs.data() + NumLToH, NumHToH);
+
+  // Check for being able to broadcast a single element.
+  if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(MVT::v8i16, DL, V,
+                                                        Mask, Subtarget, DAG))
+    return Broadcast;
 
   // Use dedicated unpack instructions for masks that match their pattern.
   if (isShuffleEquivalent(Mask, 0, 0, 1, 1, 2, 2, 3, 3))
@@ -9036,6 +9113,11 @@ static SDValue lowerV16I8VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
 
   // For single-input shuffles, there are some nicer lowering tricks we can use.
   if (NumV2Elements == 0) {
+    // Check for being able to broadcast a single element.
+    if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(MVT::v16i8, DL, V1,
+                                                          Mask, Subtarget, DAG))
+      return Broadcast;
+
     // Check whether we can widen this to an i16 shuffle by duplicating bytes.
     // Notably, this handles splat and partial-splat shuffles more efficiently.
     // However, it only makes sense if the pre-duplication shuffle simplifies
@@ -9455,6 +9537,11 @@ static SDValue lowerV4F64VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
   assert(Mask.size() == 4 && "Unexpected mask size for v4 shuffle!");
 
   if (isSingleInputShuffleMask(Mask)) {
+    // Check for being able to broadcast a single element.
+    if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(MVT::v4f64, DL, V1,
+                                                          Mask, Subtarget, DAG))
+      return Broadcast;
+
     if (!is128BitLaneCrossingShuffleMask(MVT::v4f64, Mask)) {
       // Non-half-crossing single input shuffles can be lowerid with an
       // interleaved permutation.
@@ -9538,6 +9625,11 @@ static SDValue lowerV4I64VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
                                                 Subtarget, DAG))
     return Blend;
 
+  // Check for being able to broadcast a single element.
+  if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(MVT::v4i64, DL, V1,
+                                                        Mask, Subtarget, DAG))
+    return Broadcast;
+
   // When the shuffle is mirrored between the 128-bit lanes of the unit, we can
   // use lower latency instructions that will operate on both 128-bit lanes.
   SmallVector<int, 2> RepeatedMask;
@@ -9591,6 +9683,11 @@ static SDValue lowerV8F32VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
   if (SDValue Blend = lowerVectorShuffleAsBlend(DL, MVT::v8f32, V1, V2, Mask,
                                                 Subtarget, DAG))
     return Blend;
+
+  // Check for being able to broadcast a single element.
+  if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(MVT::v8f32, DL, V1,
+                                                        Mask, Subtarget, DAG))
+    return Broadcast;
 
   // If the shuffle mask is repeated in each 128-bit lane, we have many more
   // options to efficiently lower the shuffle.
@@ -9665,6 +9762,11 @@ static SDValue lowerV8I32VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
                                                 Subtarget, DAG))
     return Blend;
 
+  // Check for being able to broadcast a single element.
+  if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(MVT::v8i32, DL, V1,
+                                                        Mask, Subtarget, DAG))
+    return Broadcast;
+
   // If the shuffle mask is repeated in each 128-bit lane we can use more
   // efficient instructions that mirror the shuffles across the two 128-bit
   // lanes.
@@ -9713,6 +9815,11 @@ static SDValue lowerV16I16VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
   ArrayRef<int> Mask = SVOp->getMask();
   assert(Mask.size() == 16 && "Unexpected mask size for v16 shuffle!");
   assert(Subtarget->hasAVX2() && "We can only lower v16i16 with AVX2!");
+
+  // Check for being able to broadcast a single element.
+  if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(MVT::v16i16, DL, V1,
+                                                        Mask, Subtarget, DAG))
+    return Broadcast;
 
   // There are no generalized cross-lane shuffle operations available on i16
   // element types.
@@ -9778,6 +9885,11 @@ static SDValue lowerV32I8VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
   ArrayRef<int> Mask = SVOp->getMask();
   assert(Mask.size() == 32 && "Unexpected mask size for v32 shuffle!");
   assert(Subtarget->hasAVX2() && "We can only lower v32i8 with AVX2!");
+
+  // Check for being able to broadcast a single element.
+  if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(MVT::v32i8, DL, V1,
+                                                        Mask, Subtarget, DAG))
+    return Broadcast;
 
   // There are no generalized cross-lane shuffle operations available on i8
   // element types.
