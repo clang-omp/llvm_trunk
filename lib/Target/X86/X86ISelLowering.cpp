@@ -213,8 +213,8 @@ static TargetLoweringObjectFile *createTLOF(const Triple &TT) {
 
 // FIXME: This should stop caching the target machine as soon as
 // we can remove resetOperationActions et al.
-X86TargetLowering::X86TargetLowering(X86TargetMachine &TM)
-  : TargetLowering(TM, createTLOF(Triple(TM.getTargetTriple()))) {
+X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM)
+    : TargetLowering(TM, createTLOF(Triple(TM.getTargetTriple()))) {
   Subtarget = &TM.getSubtarget<X86Subtarget>();
   X86ScalarSSEf64 = Subtarget->hasSSE2();
   X86ScalarSSEf32 = Subtarget->hasSSE1();
@@ -7741,12 +7741,34 @@ static SDValue lowerVectorShuffleAsZeroOrAnyExtend(
 /// \brief Try to get a scalar value for a specific element of a vector.
 ///
 /// Looks through BUILD_VECTOR and SCALAR_TO_VECTOR nodes to find a scalar.
-static SDValue getScalarValueForVectorElement(SDValue V, int Idx) {
+static SDValue getScalarValueForVectorElement(SDValue V, int Idx,
+                                              SelectionDAG &DAG) {
+  MVT VT = V.getSimpleValueType();
+  MVT EltVT = VT.getVectorElementType();
+  while (V.getOpcode() == ISD::BITCAST)
+    V = V.getOperand(0);
+  // If the bitcasts shift the element size, we can't extract an equivalent
+  // element from it.
+  MVT NewVT = V.getSimpleValueType();
+  if (!NewVT.isVector() || NewVT.getScalarSizeInBits() != VT.getScalarSizeInBits())
+    return SDValue();
+
   if (V.getOpcode() == ISD::BUILD_VECTOR ||
       (Idx == 0 && V.getOpcode() == ISD::SCALAR_TO_VECTOR))
-    return V.getOperand(Idx);
+    return DAG.getNode(ISD::BITCAST, SDLoc(V), EltVT, V.getOperand(Idx));
 
   return SDValue();
+}
+
+/// \brief Helper to test for a load that can be folded with x86 shuffles.
+///
+/// This is particularly important because the set of instructions varies
+/// significantly based on whether the operand is a load or not.
+static bool isShuffleFoldableLoad(SDValue V) {
+  while (V.getOpcode() == ISD::BITCAST)
+    V = V.getOperand(0);
+
+  return ISD::isNON_EXTLoad(V.getNode());
 }
 
 /// \brief Try to lower insertion of a single element into a zero vector.
@@ -7784,7 +7806,8 @@ static SDValue lowerVectorShuffleAsElementInsertion(
   // all the smarts here sunk into that routine. However, the current
   // lowering of BUILD_VECTOR makes that nearly impossible until the old
   // vector shuffle lowering is dead.
-  SDValue V2S = getScalarValueForVectorElement(V2, Mask[V2Index] - Mask.size());
+  SDValue V2S =
+      getScalarValueForVectorElement(V2, Mask[V2Index] - Mask.size(), DAG);
   if (!V2S)
     return SDValue();
 
@@ -7859,7 +7882,7 @@ static SDValue lowerVectorShuffleAsBroadcast(MVT VT, SDLoc DL, SDValue V,
 
     // If the scalar isn't a load we can't broadcast from it in AVX1, only with
     // AVX2.
-    if (!Subtarget->hasAVX2() && !ISD::isNON_EXTLoad(V.getNode()))
+    if (!Subtarget->hasAVX2() && !isShuffleFoldableLoad(V))
       return SDValue();
   } else if (BroadcastIdx != 0 || !Subtarget->hasAVX2()) {
     // We can't broadcast from a vector register w/o AVX2, and we can only
@@ -7921,12 +7944,13 @@ static SDValue lowerV2F64VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
   // Try to use one of the special instruction patterns to handle two common
   // blend patterns if a zero-blend above didn't work.
   if (isShuffleEquivalent(Mask, 0, 3) || isShuffleEquivalent(Mask, 1, 3))
-    if (SDValue V1S = getScalarValueForVectorElement(V1, Mask[0]))
+    if (SDValue V1S = getScalarValueForVectorElement(V1, Mask[0], DAG))
       // We can either use a special instruction to load over the low double or
       // to move just the low double.
-      return DAG.getNode(ISD::isNON_EXTLoad(V1S.getNode()) ? X86ISD::MOVLPD
-                                                           : X86ISD::MOVSD,
-                         DL, MVT::v2f64, V2, V1S);
+      return DAG.getNode(
+          isShuffleFoldableLoad(V1S) ? X86ISD::MOVLPD : X86ISD::MOVSD,
+          DL, MVT::v2f64, V2,
+          DAG.getNode(ISD::SCALAR_TO_VECTOR, DL, MVT::v2f64, V1S));
 
   if (Subtarget->hasSSE41())
     if (SDValue Blend = lowerVectorShuffleAsBlend(DL, MVT::v2f64, V1, V2, Mask,
@@ -13678,12 +13702,24 @@ static SDValue LowerFP_EXTEND(SDValue Op, SelectionDAG &DAG) {
                                  In, DAG.getUNDEF(SVT)));
 }
 
-// The only differences between FABS and FNEG are the mask and the logic op.
+/// The only differences between FABS and FNEG are the mask and the logic op.
+/// FNEG also has a folding opportunity for FNEG(FABS(x)).
 static SDValue LowerFABSorFNEG(SDValue Op, SelectionDAG &DAG) {
   assert((Op.getOpcode() == ISD::FABS || Op.getOpcode() == ISD::FNEG) &&
          "Wrong opcode for lowering FABS or FNEG.");
 
   bool IsFABS = (Op.getOpcode() == ISD::FABS);
+
+  // If this is a FABS and it has an FNEG user, bail out to fold the combination
+  // into an FNABS. We'll lower the FABS after that if it is still in use.
+  if (IsFABS)
+    for (SDNode *User : Op->uses())
+      if (User->getOpcode() == ISD::FNEG)
+        return Op;
+
+  SDValue Op0 = Op.getOperand(0);
+  bool IsFNABS = !IsFABS && (Op0.getOpcode() == ISD::FABS);
+
   SDLoc dl(Op);
   MVT VT = Op.getSimpleValueType();
   // Assume scalar op for initialization; update for vector if needed.
@@ -13719,15 +13755,19 @@ static SDValue LowerFABSorFNEG(SDValue Op, SelectionDAG &DAG) {
     // For a vector, cast operands to a vector type, perform the logic op,
     // and cast the result back to the original value type.
     MVT VecVT = MVT::getVectorVT(MVT::i64, VT.getSizeInBits() / 64);
-    SDValue Op0Casted = DAG.getNode(ISD::BITCAST, dl, VecVT, Op.getOperand(0));
     SDValue MaskCasted = DAG.getNode(ISD::BITCAST, dl, VecVT, Mask);
-    unsigned LogicOp = IsFABS ? ISD::AND : ISD::XOR;
+    SDValue Operand = IsFNABS ?
+      DAG.getNode(ISD::BITCAST, dl, VecVT, Op0.getOperand(0)) :
+      DAG.getNode(ISD::BITCAST, dl, VecVT, Op0);
+    unsigned BitOp = IsFABS ? ISD::AND : IsFNABS ? ISD::OR : ISD::XOR;
     return DAG.getNode(ISD::BITCAST, dl, VT,
-                       DAG.getNode(LogicOp, dl, VecVT, Op0Casted, MaskCasted));
+                       DAG.getNode(BitOp, dl, VecVT, Operand, MaskCasted));
   }
+  
   // If not vector, then scalar.
-  unsigned LogicOp = IsFABS ? X86ISD::FAND : X86ISD::FXOR;
-  return DAG.getNode(LogicOp, dl, VT, Op.getOperand(0), Mask);
+  unsigned BitOp = IsFABS ? X86ISD::FAND : IsFNABS ? X86ISD::FOR : X86ISD::FXOR;
+  SDValue Operand = IsFNABS ? Op0.getOperand(0) : Op0;
+  return DAG.getNode(BitOp, dl, VT, Operand, Mask);
 }
 
 static SDValue LowerFCOPYSIGN(SDValue Op, SelectionDAG &DAG) {
@@ -13821,8 +13861,7 @@ static SDValue LowerFGETSIGN(SDValue Op, SelectionDAG &DAG) {
   return DAG.getNode(ISD::AND, dl, VT, xFGETSIGN, DAG.getConstant(1, VT));
 }
 
-// LowerVectorAllZeroTest - Check whether an OR'd tree is PTEST-able.
-//
+// Check whether an OR'd tree is PTEST-able.
 static SDValue LowerVectorAllZeroTest(SDValue Op, const X86Subtarget *Subtarget,
                                       SelectionDAG &DAG) {
   assert(Op.getOpcode() == ISD::OR && "Only check OR'd tree.");
