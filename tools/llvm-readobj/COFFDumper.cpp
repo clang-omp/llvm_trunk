@@ -55,6 +55,7 @@ public:
   void printSymbols() override;
   void printDynamicSymbols() override;
   void printUnwindInfo() override;
+  void printCOFFImports() override;
 
 private:
   void printSymbol(const SymbolRef &Sym);
@@ -73,6 +74,9 @@ private:
                                 SymbolRef &Sym);
   std::error_code resolveSymbolName(const coff_section *Section,
                                     uint64_t Offset, StringRef &Name);
+
+  void printImportedSymbols(imported_symbol_iterator I,
+                            imported_symbol_iterator E);
 
   typedef DenseMap<const coff_section*, std::vector<RelocationRef> > RelocMapTy;
 
@@ -882,3 +886,41 @@ void COFFDumper::printUnwindInfo() {
   }
 }
 
+void COFFDumper::printImportedSymbols(imported_symbol_iterator I,
+                                      imported_symbol_iterator E) {
+  for (; I != E; ++I) {
+    StringRef Sym;
+    if (error(I->getSymbolName(Sym))) return;
+    uint16_t Ordinal;
+    if (error(I->getOrdinal(Ordinal))) return;
+    W.printNumber("Symbol", Sym, Ordinal);
+  }
+}
+
+void COFFDumper::printCOFFImports() {
+  // Regular imports
+  for (auto I = Obj->import_directory_begin(), E = Obj->import_directory_end();
+       I != E; ++I) {
+    DictScope Import(W, "Import");
+    StringRef Name;
+    if (error(I->getName(Name))) return;
+    W.printString("Name", Name);
+    uint32_t Addr;
+    if (error(I->getImportLookupTableRVA(Addr))) return;
+    W.printHex("ImportLookupTableRVA", Addr);
+    if (error(I->getImportAddressTableRVA(Addr))) return;
+    W.printHex("ImportAddressTableRVA", Addr);
+    printImportedSymbols(I->imported_symbol_begin(), I->imported_symbol_end());
+  }
+
+  // Delay imports
+  for (auto I = Obj->delay_import_directory_begin(),
+            E = Obj->delay_import_directory_end();
+       I != E; ++I) {
+    DictScope Import(W, "DelayImport");
+    StringRef Name;
+    if (error(I->getName(Name))) return;
+    W.printString("Name", Name);
+    printImportedSymbols(I->imported_symbol_begin(), I->imported_symbol_end());
+  }
+}
