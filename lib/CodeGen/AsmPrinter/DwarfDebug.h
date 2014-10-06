@@ -215,10 +215,6 @@ class DwarfDebug : public AsmPrinterHandler {
   // can refer to them in spite of insertions into this list.
   SmallVector<DebugLocList, 4> DotDebugLocEntries;
 
-  // Collection of subprogram DIEs that are marked (at the end of the module)
-  // as DW_AT_inline.
-  SmallPtrSet<DIE *, 4> InlinedSubprogramDIEs;
-
   // This is a collection of subprogram MDNodes that are processed to
   // create DIEs.
   SmallPtrSet<const MDNode *, 16> ProcessedSPNodes;
@@ -511,11 +507,6 @@ class DwarfDebug : public AsmPrinterHandler {
   /// \brief Construct imported_module or imported_declaration DIE.
   void constructAndAddImportedEntityDIE(DwarfCompileUnit &TheCU,
                                         const MDNode *N);
-
-  /// \brief Construct import_module DIE.
-  std::unique_ptr<DIE>
-  constructImportedEntityDIE(DwarfCompileUnit &TheCU,
-                             const DIImportedEntity &Module);
 
   /// \brief Register a source line with debug info. Returns the unique
   /// label that was emitted and which provides correspondence to the
