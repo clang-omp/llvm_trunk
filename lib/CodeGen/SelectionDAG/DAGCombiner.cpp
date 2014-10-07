@@ -5208,14 +5208,10 @@ SDValue DAGCombiner::visitSIGN_EXTEND(SDNode *N) {
       if (!LegalOperations || TLI.isOperationLegal(ISD::SETCC, SetCCVT)) {
         SDLoc DL(N);
         ISD::CondCode CC = cast<CondCodeSDNode>(N0.getOperand(2))->get();
-        SDValue SetCC = DAG.getSetCC(DL,
-                                     SetCCVT,
+        SDValue SetCC = DAG.getSetCC(DL, SetCCVT,
                                      N0.getOperand(0), N0.getOperand(1), CC);
-        EVT SelectVT = getSetCCResultType(VT);
-        return DAG.getSelect(DL, VT,
-                             DAG.getSExtOrTrunc(SetCC, DL, SelectVT),
+        return DAG.getSelect(DL, VT, SetCC,
                              NegOne, DAG.getConstant(0, VT));
-
       }
     }
   }
@@ -7035,6 +7031,28 @@ SDValue DAGCombiner::visitFDIV(SDNode *N) {
         RV = DAG.getNode(ISD::FP_ROUND, SDLoc(N1), VT, RV, N1.getOperand(1));
         AddToWorklist(RV.getNode());
         return DAG.getNode(ISD::FMUL, DL, VT, N0, RV);
+      }
+    } else if (N1.getOpcode() == ISD::FMUL) {
+      // Look through an FMUL. Even though this won't remove the FDIV directly,
+      // it's still worthwhile to get rid of the FSQRT if possible.
+      SDValue SqrtOp;
+      SDValue OtherOp;
+      if (N1.getOperand(0).getOpcode() == ISD::FSQRT) {
+        SqrtOp = N1.getOperand(0);
+        OtherOp = N1.getOperand(1);
+      } else if (N1.getOperand(1).getOpcode() == ISD::FSQRT) {
+        SqrtOp = N1.getOperand(1);
+        OtherOp = N1.getOperand(0);
+      }
+      if (SqrtOp.getNode()) {
+        // We found a FSQRT, so try to make this fold:
+        // x / (y * sqrt(z)) -> x * (rsqrt(z) / y)
+        if (SDValue RV = BuildRsqrtEstimate(SqrtOp.getOperand(0))) {
+          AddToWorklist(RV.getNode());
+          RV = DAG.getNode(ISD::FDIV, SDLoc(N1), VT, RV, OtherOp);
+          AddToWorklist(RV.getNode());
+          return DAG.getNode(ISD::FMUL, DL, VT, N0, RV);
+        }
       }
     }
     
