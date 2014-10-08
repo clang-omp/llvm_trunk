@@ -224,11 +224,10 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, unsigned TripCount,
 
   // Notify ScalarEvolution that the loop will be substantially changed,
   // if not outright eliminated.
-  if (PP) {
-    ScalarEvolution *SE = PP->getAnalysisIfAvailable<ScalarEvolution>();
-    if (SE)
-      SE->forgetLoop(L);
-  }
+  ScalarEvolution *SE =
+      PP ? PP->getAnalysisIfAvailable<ScalarEvolution>() : nullptr;
+  if (SE)
+    SE->forgetLoop(L);
 
   // If we know the trip count, we know the multiple...
   unsigned BreakoutTrip = 0;
@@ -302,13 +301,41 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, unsigned TripCount,
 
   for (unsigned It = 1; It != Count; ++It) {
     std::vector<BasicBlock*> NewBlocks;
+    SmallDenseMap<const Loop *, Loop *, 4> NewLoops;
+    NewLoops[L] = L;
 
     for (LoopBlocksDFS::RPOIterator BB = BlockBegin; BB != BlockEnd; ++BB) {
       ValueToValueMapTy VMap;
       BasicBlock *New = CloneBasicBlock(*BB, VMap, "." + Twine(It));
       Header->getParent()->getBasicBlockList().push_back(New);
 
-      L->addBasicBlockToLoop(New, LI->getBase());
+      // Tell LI about New.
+      if (*BB == Header) {
+        assert(LI->getLoopFor(*BB) == L && "Header should not be in a sub-loop");
+        L->addBasicBlockToLoop(New, LI->getBase());
+      } else {
+        // Figure out which loop New is in.
+        const Loop *OldLoop = LI->getLoopFor(*BB);
+        assert(OldLoop && "Should (at least) be in the loop being unrolled!");
+
+        Loop *&NewLoop = NewLoops[OldLoop];
+        if (!NewLoop) {
+          // Found a new sub-loop.
+          assert(*BB == OldLoop->getHeader() &&
+                 "Header should be first in RPO");
+
+          Loop *NewLoopParent = NewLoops.lookup(OldLoop->getParentLoop());
+          assert(NewLoopParent &&
+                 "Expected parent loop before sub-loop in RPO");
+          NewLoop = new Loop;
+          NewLoopParent->addChildLoop(NewLoop);
+
+          // Forget the old loop, since its inputs may have changed.
+          if (SE)
+            SE->forgetLoop(OldLoop);
+        }
+        NewLoop->addBasicBlockToLoop(New, LI->getBase());
+      }
 
       if (*BB == Header)
         // Loop over all of the PHI nodes in the block, changing them to use
@@ -459,7 +486,6 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, unsigned TripCount,
     }
 
     // Simplify any new induction variables in the partially unrolled loop.
-    ScalarEvolution *SE = PP->getAnalysisIfAvailable<ScalarEvolution>();
     if (SE && !CompletelyUnroll) {
       SmallVector<WeakVH, 16> DeadInsts;
       simplifyLoopIVs(L, SE, LPM, DeadInsts);
@@ -508,7 +534,6 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, unsigned TripCount,
     if (OuterL) {
       DataLayoutPass *DLP = PP->getAnalysisIfAvailable<DataLayoutPass>();
       const DataLayout *DL = DLP ? &DLP->getDataLayout() : nullptr;
-      ScalarEvolution *SE = PP->getAnalysisIfAvailable<ScalarEvolution>();
       simplifyLoop(OuterL, DT, LI, PP, /*AliasAnalysis*/ nullptr, SE, DL, AT);
 
       // LCSSA must be performed on the outermost affected loop. The unrolled

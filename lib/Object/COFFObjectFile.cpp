@@ -286,8 +286,6 @@ std::error_code COFFObjectFile::getSectionContents(DataRefImpl Ref,
 std::error_code COFFObjectFile::getSectionAlignment(DataRefImpl Ref,
                                                     uint64_t &Res) const {
   const coff_section *Sec = toSec(Ref);
-  if (!Sec)
-    return object_error::parse_failed;
   Res = uint64_t(1) << (((Sec->Characteristics & 0x00F00000) >> 20) - 1);
   return object_error::success;
 }
@@ -347,13 +345,8 @@ std::error_code COFFObjectFile::sectionContainsSymbol(DataRefImpl SecRef,
                                                       bool &Result) const {
   const coff_section *Sec = toSec(SecRef);
   COFFSymbolRef Symb = getCOFFSymbol(SymbRef);
-  const coff_section *SymbSec = nullptr;
-  if (std::error_code EC = getSection(Symb.getSectionNumber(), SymbSec))
-    return EC;
-  if (SymbSec == Sec)
-    Result = true;
-  else
-    Result = false;
+  int32_t SecNumber = (Sec - SectionTable) + 1;
+  Result = SecNumber == Symb.getSectionNumber();
   return object_error::success;
 }
 

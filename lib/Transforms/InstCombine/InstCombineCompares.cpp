@@ -21,7 +21,6 @@
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/Target/TargetLibraryInfo.h"
-
 using namespace llvm;
 using namespace PatternMatch;
 
@@ -2517,8 +2516,9 @@ bool InstCombiner::replacedSelectWithOperand(SelectInst *SI,
                                              const ICmpInst *Icmp,
                                              const ConstantInt *CI1,
                                              const ConstantInt *CI2) {
-  if (isChainSelectCmpBranch(SI) && Icmp->isEquality()) {
-    // Code sequence is select - icmp.[eq|ne] - br
+  if (isChainSelectCmpBranch(SI) &&
+      Icmp->getPredicate() == ICmpInst::ICMP_EQ) {
+    // Code sequence is select - icmp.eq - br
     unsigned ReplaceWithOpd = 0;
     if (CI1 && !CI1->isZero())
       // The first constant operand of the select and the RHS of
@@ -2538,11 +2538,7 @@ bool InstCombiner::replacedSelectWithOperand(SelectInst *SI,
       ReplaceWithOpd = 1;
     if (ReplaceWithOpd) {
       // Replace select with operand on else path for EQ compares.
-      // Replace select with operand on then path for NE compares.
-      BasicBlock *Succ =
-          Icmp->getPredicate() == ICmpInst::ICMP_EQ
-              ? SI->getParent()->getTerminator()->getSuccessor(1)
-              : SI->getParent()->getTerminator()->getSuccessor(0);
+      BasicBlock *Succ = SI->getParent()->getTerminator()->getSuccessor(1);
       if (InstCombiner::dominatesAllUses(SI, Icmp, Succ)) {
         SI->replaceAllUsesWith(SI->getOperand(ReplaceWithOpd));
         return true;

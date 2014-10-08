@@ -292,38 +292,31 @@ void ARMSubtarget::initSubtargetFeatures(StringRef CPU, StringRef FS) {
     SupportsTailCall = !isThumb1Only();
   }
 
-  switch (Align) {
-    case DefaultAlign:
-      // Assume pre-ARMv6 doesn't support unaligned accesses.
-      //
-      // ARMv6 may or may not support unaligned accesses depending on the
-      // SCTLR.U bit, which is architecture-specific. We assume ARMv6
-      // Darwin and NetBSD targets support unaligned accesses, and others don't.
-      //
-      // ARMv7 always has SCTLR.U set to 1, but it has a new SCTLR.A bit
-      // which raises an alignment fault on unaligned accesses. Linux
-      // defaults this bit to 0 and handles it as a system-wide (not
-      // per-process) setting. It is therefore safe to assume that ARMv7+
-      // Linux targets support unaligned accesses. The same goes for NaCl.
-      //
-      // The above behavior is consistent with GCC.
-      AllowsUnalignedMem =
-          (hasV7Ops() && (isTargetLinux() || isTargetNaCl() ||
-                          isTargetNetBSD())) ||
-          (hasV6Ops() && (isTargetMachO() || isTargetNetBSD()));
-      // The one exception is cortex-m0, which despite being v6, does not
-      // support unaligned accesses. Rather than make the above boolean
-      // expression even more obtuse, just override the value here.
-      if (isThumb1Only() && isMClass())
-        AllowsUnalignedMem = false;
-      break;
-    case StrictAlign:
-      AllowsUnalignedMem = false;
-      break;
-    case NoStrictAlign:
-      AllowsUnalignedMem = true;
-      break;
+  if (Align == DefaultAlign) {
+    // Assume pre-ARMv6 doesn't support unaligned accesses.
+    //
+    // ARMv6 may or may not support unaligned accesses depending on the
+    // SCTLR.U bit, which is architecture-specific. We assume ARMv6
+    // Darwin and NetBSD targets support unaligned accesses, and others don't.
+    //
+    // ARMv7 always has SCTLR.U set to 1, but it has a new SCTLR.A bit
+    // which raises an alignment fault on unaligned accesses. Linux
+    // defaults this bit to 0 and handles it as a system-wide (not
+    // per-process) setting. It is therefore safe to assume that ARMv7+
+    // Linux targets support unaligned accesses. The same goes for NaCl.
+    //
+    // The above behavior is consistent with GCC.
+    AllowsUnalignedMem =
+      (hasV7Ops() && (isTargetLinux() || isTargetNaCl() ||
+                      isTargetNetBSD())) ||
+      (hasV6Ops() && (isTargetMachO() || isTargetNetBSD()));
+  } else {
+    AllowsUnalignedMem = !(Align == StrictAlign);
   }
+
+  // No v6M core supports unaligned memory access (v6M ARM ARM A3.2)
+  if (isV6M())
+    AllowsUnalignedMem = false;
 
   switch (IT) {
   case DefaultIT:

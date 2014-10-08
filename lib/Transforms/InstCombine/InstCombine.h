@@ -98,8 +98,8 @@ class LLVM_LIBRARY_VISIBILITY InstCombiner
       public InstVisitor<InstCombiner, Instruction *> {
   AssumptionTracker *AT;
   const DataLayout *DL;
-  DominatorTree *DT; // not required
   TargetLibraryInfo *TLI;
+  DominatorTree *DT;
   bool MadeIRChange;
   LibCallSimplifier *Simplifier;
   bool MinimizeSize;

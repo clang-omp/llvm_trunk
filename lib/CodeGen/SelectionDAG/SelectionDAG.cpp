@@ -907,8 +907,7 @@ unsigned SelectionDAG::getEVTAlignment(EVT VT) const {
 
 // EntryNode could meaningfully have debug info if we can find it...
 SelectionDAG::SelectionDAG(const TargetMachine &tm, CodeGenOpt::Level OL)
-    : TM(tm), TSI(tm.getSubtargetImpl()->getSelectionDAGInfo()), TLI(nullptr),
-      OptLevel(OL),
+    : TM(tm), TSI(nullptr), TLI(nullptr), OptLevel(OL),
       EntryNode(ISD::EntryToken, 0, DebugLoc(), getVTList(MVT::Other)),
       Root(getEntryNode()), NewNodesMustHaveLegalTypes(false),
       UpdateListeners(nullptr) {
@@ -916,9 +915,10 @@ SelectionDAG::SelectionDAG(const TargetMachine &tm, CodeGenOpt::Level OL)
   DbgInfo = new SDDbgInfo();
 }
 
-void SelectionDAG::init(MachineFunction &mf, const TargetLowering *tli) {
+void SelectionDAG::init(MachineFunction &mf) {
   MF = &mf;
-  TLI = tli;
+  TLI = getSubtarget().getTargetLowering();
+  TSI = getSubtarget().getSelectionDAGInfo();
   Context = &mf.getFunction()->getContext();
 }
 
