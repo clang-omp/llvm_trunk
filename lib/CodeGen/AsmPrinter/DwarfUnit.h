@@ -292,11 +292,6 @@ public:
   /// addLocationList - Add a Dwarf loclistptr attribute data and value.
   void addLocationList(DIE &Die, dwarf::Attribute Attribute, unsigned Index);
 
-  /// addSectionLabel - Add a Dwarf section label attribute data and value.
-  ///
-  void addSectionLabel(DIE &Die, dwarf::Attribute Attribute,
-                       const MCSymbol *Label);
-
   /// addSectionOffset - Add an offset into a section attribute data and value.
   ///
   void addSectionOffset(DIE &Die, dwarf::Attribute Attribute, uint64_t Integer);
@@ -304,10 +299,6 @@ public:
   /// addOpAddress - Add a dwarf op address data and value using the
   /// form given and an op of either DW_FORM_addr or DW_FORM_GNU_addr_index.
   void addOpAddress(DIELoc &Die, const MCSymbol *Label);
-
-  /// addSectionDelta - Add a label delta attribute data and value.
-  void addSectionDelta(DIE &Die, dwarf::Attribute Attribute, const MCSymbol *Hi,
-                       const MCSymbol *Lo);
 
   /// addLabelDelta - Add a label delta attribute data and value.
   void addLabelDelta(DIE &Die, dwarf::Attribute Attribute, const MCSymbol *Hi,
@@ -417,10 +408,6 @@ public:
   /// vtables.
   void constructContainingTypeDIEs();
 
-  /// constructVariableDIE - Construct a DIE for the given DbgVariable.
-  std::unique_ptr<DIE> constructVariableDIE(DbgVariable &DV,
-                                            bool Abstract = false);
-
   /// constructSubprogramArguments - Construct function argument DIEs.
   void constructSubprogramArguments(DIE &Buffer, DITypeArray Args);
 
@@ -458,11 +445,6 @@ protected:
   virtual unsigned getOrCreateSourceID(StringRef File, StringRef Directory) = 0;
 
 private:
-  /// \brief Construct a DIE for the given DbgVariable without initializing the
-  /// DbgVariable's DIE reference.
-  std::unique_ptr<DIE> constructVariableDIEImpl(const DbgVariable &DV,
-                                                bool Abstract);
-
   /// constructTypeDIE - Construct basic type die from DIBasicType.
   void constructTypeDIE(DIE &Buffer, DIBasicType BTy);
 

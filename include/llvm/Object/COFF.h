@@ -600,6 +600,11 @@ public:
   export_directory_iterator export_directory_begin() const;
   export_directory_iterator export_directory_end() const;
 
+  iterator_range<import_directory_iterator> import_directories() const;
+  iterator_range<delay_import_directory_iterator>
+      delay_import_directories() const;
+  iterator_range<export_directory_iterator> export_directories() const;
+
   std::error_code getPE32Header(const pe32_header *&Res) const;
   std::error_code getPE32PlusHeader(const pe32plus_header *&Res) const;
   std::error_code getDataDirectory(uint32_t index,
@@ -650,6 +655,7 @@ public:
   }
 
   std::error_code getSectionName(const coff_section *Sec, StringRef &Res) const;
+  uint64_t getSectionSize(const coff_section *Sec) const;
   std::error_code getSectionContents(const coff_section *Sec,
                                      ArrayRef<uint8_t> &Res) const;
 
@@ -676,6 +682,7 @@ public:
 
   imported_symbol_iterator imported_symbol_begin() const;
   imported_symbol_iterator imported_symbol_end() const;
+  iterator_range<imported_symbol_iterator> imported_symbols() const;
 
   std::error_code getName(StringRef &Result) const;
   std::error_code getImportLookupTableRVA(uint32_t &Result) const;
@@ -705,6 +712,7 @@ public:
 
   imported_symbol_iterator imported_symbol_begin() const;
   imported_symbol_iterator imported_symbol_end() const;
+  iterator_range<imported_symbol_iterator> imported_symbols() const;
 
   std::error_code getName(StringRef &Result) const;
   std::error_code getDelayImportTable(

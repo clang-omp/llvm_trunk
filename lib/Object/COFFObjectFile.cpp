@@ -271,8 +271,7 @@ uint64_t COFFObjectFile::getSectionAddress(DataRefImpl Ref) const {
 }
 
 uint64_t COFFObjectFile::getSectionSize(DataRefImpl Ref) const {
-  const coff_section *Sec = toSec(Ref);
-  return Sec->SizeOfRawData;
+  return getSectionSize(toSec(Ref));
 }
 
 std::error_code COFFObjectFile::getSectionContents(DataRefImpl Ref,
@@ -730,6 +729,22 @@ unsigned COFFObjectFile::getArch() const {
   }
 }
 
+iterator_range<import_directory_iterator>
+COFFObjectFile::import_directories() const {
+  return make_range(import_directory_begin(), import_directory_end());
+}
+
+iterator_range<delay_import_directory_iterator>
+COFFObjectFile::delay_import_directories() const {
+  return make_range(delay_import_directory_begin(),
+                    delay_import_directory_end());
+}
+
+iterator_range<export_directory_iterator>
+COFFObjectFile::export_directories() const {
+  return make_range(export_directory_begin(), export_directory_end());
+}
+
 std::error_code COFFObjectFile::getPE32Header(const pe32_header *&Res) const {
   Res = PE32Header;
   return object_error::success;
@@ -850,22 +865,42 @@ std::error_code COFFObjectFile::getSectionName(const coff_section *Sec,
   return object_error::success;
 }
 
+uint64_t COFFObjectFile::getSectionSize(const coff_section *Sec) const {
+  // SizeOfRawData and VirtualSize change what they represent depending on
+  // whether or not we have an executable image.
+  //
+  // For object files, SizeOfRawData contains the size of section's data;
+  // VirtualSize is always zero.
+  //
+  // For executables, SizeOfRawData *must* be a multiple of FileAlignment; the
+  // actual section size is in VirtualSize.  It is possible for VirtualSize to
+  // be greater than SizeOfRawData; the contents past that point should be
+  // considered to be zero.
+  uint32_t SectionSize;
+  if (Sec->VirtualSize)
+    SectionSize = std::min(Sec->VirtualSize, Sec->SizeOfRawData);
+  else
+    SectionSize = Sec->SizeOfRawData;
+
+  return SectionSize;
+}
+
 std::error_code
 COFFObjectFile::getSectionContents(const coff_section *Sec,
                                    ArrayRef<uint8_t> &Res) const {
-  // PointerToRawData and SizeOfRawData won't make sense for BSS sections, don't
-  // do anything interesting for them.
+  // PointerToRawData and SizeOfRawData won't make sense for BSS sections,
+  // don't do anything interesting for them.
   assert((Sec->Characteristics & COFF::IMAGE_SCN_CNT_UNINITIALIZED_DATA) == 0 &&
          "BSS sections don't have contents!");
   // The only thing that we need to verify is that the contents is contained
   // within the file bounds. We don't need to make sure it doesn't cover other
   // data, as there's nothing that says that is not allowed.
   uintptr_t ConStart = uintptr_t(base()) + Sec->PointerToRawData;
-  uintptr_t ConEnd = ConStart + Sec->SizeOfRawData;
+  uint32_t SectionSize = getSectionSize(Sec);
+  uintptr_t ConEnd = ConStart + SectionSize;
   if (ConEnd > uintptr_t(Data.getBufferEnd()))
     return object_error::parse_failed;
-  Res = makeArrayRef(reinterpret_cast<const uint8_t*>(ConStart),
-                     Sec->SizeOfRawData);
+  Res = makeArrayRef(reinterpret_cast<const uint8_t *>(ConStart), SectionSize);
   return object_error::success;
 }
 
@@ -1094,6 +1129,11 @@ ImportDirectoryEntryRef::imported_symbol_end() const {
                            OwningObject);
 }
 
+iterator_range<imported_symbol_iterator>
+ImportDirectoryEntryRef::imported_symbols() const {
+  return make_range(imported_symbol_begin(), imported_symbol_end());
+}
+
 std::error_code ImportDirectoryEntryRef::getName(StringRef &Result) const {
   uintptr_t IntPtr = 0;
   if (std::error_code EC =
@@ -1144,6 +1184,11 @@ imported_symbol_iterator
 DelayImportDirectoryEntryRef::imported_symbol_end() const {
   return importedSymbolEnd(Table[Index].DelayImportNameTable,
                            OwningObject);
+}
+
+iterator_range<imported_symbol_iterator>
+DelayImportDirectoryEntryRef::imported_symbols() const {
+  return make_range(imported_symbol_begin(), imported_symbol_end());
 }
 
 std::error_code DelayImportDirectoryEntryRef::getName(StringRef &Result) const {

@@ -7,6 +7,7 @@
 #include "llvm/IR/Instruction.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCStreamer.h"
+#include "llvm/Target/TargetFrameLowering.h"
 #include "llvm/Target/TargetLoweringObjectFile.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetSubtargetInfo.h"
@@ -254,6 +255,18 @@ void DwarfCompileUnit::addRange(RangeSpan Range) {
   CURanges.back().setEnd(Range.getEnd());
 }
 
+void DwarfCompileUnit::addSectionLabel(DIE &Die, dwarf::Attribute Attribute,
+                                       const MCSymbol *Label,
+                                       const MCSymbol *Sec) {
+  if (Asm->MAI->doesDwarfUseRelocationsAcrossSections())
+    addLabel(Die, Attribute,
+             DD->getDwarfVersion() >= 4 ? dwarf::DW_FORM_sec_offset
+                                        : dwarf::DW_FORM_data4,
+             Label);
+  else
+    addSectionDelta(Die, Attribute, Label, Sec);
+}
+
 void DwarfCompileUnit::initStmtList(MCSymbol *DwarfLineSectionSym) {
   // Define start line table label for each Compile Unit.
   MCSymbol *LineTableStartSym =
@@ -266,11 +279,8 @@ void DwarfCompileUnit::initStmtList(MCSymbol *DwarfLineSectionSym) {
   // left in the skeleton CU and so not included.
   // The line table entries are not always emitted in assembly, so it
   // is not okay to use line_table_start here.
-  if (Asm->MAI->doesDwarfUseRelocationsAcrossSections())
-    addSectionLabel(UnitDie, dwarf::DW_AT_stmt_list, LineTableStartSym);
-  else
-    addSectionDelta(UnitDie, dwarf::DW_AT_stmt_list, LineTableStartSym,
-                    DwarfLineSectionSym);
+  addSectionLabel(UnitDie, dwarf::DW_AT_stmt_list, LineTableStartSym,
+                  DwarfLineSectionSym);
 }
 
 void DwarfCompileUnit::applyStmtList(DIE &D) {
@@ -317,6 +327,227 @@ DIE &DwarfCompileUnit::updateSubprogramScopeDIE(DISubprogram SP) {
   DD->addSubprogramNames(SP, *SPDie);
 
   return *SPDie;
+}
+
+// Construct a DIE for this scope.
+void DwarfCompileUnit::constructScopeDIE(
+    LexicalScope *Scope, SmallVectorImpl<std::unique_ptr<DIE>> &FinalChildren) {
+  if (!Scope || !Scope->getScopeNode())
+    return;
+
+  DIScope DS(Scope->getScopeNode());
+
+  assert((Scope->getInlinedAt() || !DS.isSubprogram()) &&
+         "Only handle inlined subprograms here, use "
+         "constructSubprogramScopeDIE for non-inlined "
+         "subprograms");
+
+  SmallVector<std::unique_ptr<DIE>, 8> Children;
+
+  // We try to create the scope DIE first, then the children DIEs. This will
+  // avoid creating un-used children then removing them later when we find out
+  // the scope DIE is null.
+  std::unique_ptr<DIE> ScopeDIE;
+  if (Scope->getParent() && DS.isSubprogram()) {
+    ScopeDIE = constructInlinedScopeDIE(Scope);
+    if (!ScopeDIE)
+      return;
+    // We create children when the scope DIE is not null.
+    DD->createScopeChildrenDIE(*this, Scope, Children);
+  } else {
+    // Early exit when we know the scope DIE is going to be null.
+    if (DD->isLexicalScopeDIENull(Scope))
+      return;
+
+    unsigned ChildScopeCount;
+
+    // We create children here when we know the scope DIE is not going to be
+    // null and the children will be added to the scope DIE.
+    DD->createScopeChildrenDIE(*this, Scope, Children, &ChildScopeCount);
+
+    // There is no need to emit empty lexical block DIE.
+    for (const auto &E : DD->findImportedEntitiesForScope(DS))
+      Children.push_back(
+          constructImportedEntityDIE(DIImportedEntity(E.second)));
+    // If there are only other scopes as children, put them directly in the
+    // parent instead, as this scope would serve no purpose.
+    if (Children.size() == ChildScopeCount) {
+      FinalChildren.insert(FinalChildren.end(),
+                           std::make_move_iterator(Children.begin()),
+                           std::make_move_iterator(Children.end()));
+      return;
+    }
+    ScopeDIE = constructLexicalScopeDIE(Scope);
+    assert(ScopeDIE && "Scope DIE should not be null.");
+  }
+
+  // Add children
+  for (auto &I : Children)
+    ScopeDIE->addChild(std::move(I));
+
+  FinalChildren.push_back(std::move(ScopeDIE));
+}
+
+void DwarfCompileUnit::addSectionDelta(DIE &Die, dwarf::Attribute Attribute,
+                                       const MCSymbol *Hi, const MCSymbol *Lo) {
+  DIEValue *Value = new (DIEValueAllocator) DIEDelta(Hi, Lo);
+  Die.addValue(Attribute, DD->getDwarfVersion() >= 4 ? dwarf::DW_FORM_sec_offset
+                                                     : dwarf::DW_FORM_data4,
+               Value);
+}
+
+void
+DwarfCompileUnit::addScopeRangeList(DIE &ScopeDIE,
+                                    const SmallVectorImpl<InsnRange> &Range) {
+  // Emit offset in .debug_range as a relocatable label. emitDIE will handle
+  // emitting it appropriately.
+  MCSymbol *RangeSym =
+      Asm->GetTempSymbol("debug_ranges", DD->getNextRangeNumber());
+
+  auto *RangeSectionSym = DD->getRangeSectionSym();
+
+  // Under fission, ranges are specified by constant offsets relative to the
+  // CU's DW_AT_GNU_ranges_base.
+  if (DD->useSplitDwarf())
+    addSectionDelta(ScopeDIE, dwarf::DW_AT_ranges, RangeSym, RangeSectionSym);
+  else
+    addSectionLabel(ScopeDIE, dwarf::DW_AT_ranges, RangeSym, RangeSectionSym);
+
+  RangeSpanList List(RangeSym);
+  for (const InsnRange &R : Range)
+    List.addRange(RangeSpan(DD->getLabelBeforeInsn(R.first),
+                            DD->getLabelAfterInsn(R.second)));
+
+  // Add the range list to the set of ranges to be emitted.
+  addRangeList(std::move(List));
+}
+
+void DwarfCompileUnit::attachRangesOrLowHighPC(
+    DIE &Die, const SmallVectorImpl<InsnRange> &Ranges) {
+  assert(!Ranges.empty());
+  if (Ranges.size() == 1)
+    attachLowHighPC(Die, DD->getLabelBeforeInsn(Ranges.front().first),
+                    DD->getLabelAfterInsn(Ranges.front().second));
+  else
+    addScopeRangeList(Die, Ranges);
+}
+
+// This scope represents inlined body of a function. Construct DIE to
+// represent this concrete inlined copy of the function.
+std::unique_ptr<DIE>
+DwarfCompileUnit::constructInlinedScopeDIE(LexicalScope *Scope) {
+  assert(Scope->getScopeNode());
+  DIScope DS(Scope->getScopeNode());
+  DISubprogram InlinedSP = getDISubprogram(DS);
+  // Find the subprogram's DwarfCompileUnit in the SPMap in case the subprogram
+  // was inlined from another compile unit.
+  DIE *OriginDIE = DD->getAbstractSPDies()[InlinedSP];
+  assert(OriginDIE && "Unable to find original DIE for an inlined subprogram.");
+
+  auto ScopeDIE = make_unique<DIE>(dwarf::DW_TAG_inlined_subroutine);
+  addDIEEntry(*ScopeDIE, dwarf::DW_AT_abstract_origin, *OriginDIE);
+
+  attachRangesOrLowHighPC(*ScopeDIE, Scope->getRanges());
+
+  // Add the call site information to the DIE.
+  DILocation DL(Scope->getInlinedAt());
+  addUInt(*ScopeDIE, dwarf::DW_AT_call_file, None,
+          getOrCreateSourceID(DL.getFilename(), DL.getDirectory()));
+  addUInt(*ScopeDIE, dwarf::DW_AT_call_line, None, DL.getLineNumber());
+
+  // Add name to the name table, we do this here because we're guaranteed
+  // to have concrete versions of our DW_TAG_inlined_subprogram nodes.
+  DD->addSubprogramNames(InlinedSP, *ScopeDIE);
+
+  return ScopeDIE;
+}
+
+// Construct new DW_TAG_lexical_block for this scope and attach
+// DW_AT_low_pc/DW_AT_high_pc labels.
+std::unique_ptr<DIE>
+DwarfCompileUnit::constructLexicalScopeDIE(LexicalScope *Scope) {
+  if (DD->isLexicalScopeDIENull(Scope))
+    return nullptr;
+
+  auto ScopeDIE = make_unique<DIE>(dwarf::DW_TAG_lexical_block);
+  if (Scope->isAbstractScope())
+    return ScopeDIE;
+
+  attachRangesOrLowHighPC(*ScopeDIE, Scope->getRanges());
+
+  return ScopeDIE;
+}
+
+/// constructVariableDIE - Construct a DIE for the given DbgVariable.
+std::unique_ptr<DIE> DwarfCompileUnit::constructVariableDIE(DbgVariable &DV,
+                                                            bool Abstract) {
+  auto D = constructVariableDIEImpl(DV, Abstract);
+  DV.setDIE(*D);
+  return D;
+}
+
+std::unique_ptr<DIE>
+DwarfCompileUnit::constructVariableDIEImpl(const DbgVariable &DV,
+                                           bool Abstract) {
+  // Define variable debug information entry.
+  auto VariableDie = make_unique<DIE>(DV.getTag());
+
+  if (Abstract) {
+    applyVariableAttributes(DV, *VariableDie);
+    return VariableDie;
+  }
+
+  // Add variable address.
+
+  unsigned Offset = DV.getDotDebugLocOffset();
+  if (Offset != ~0U) {
+    addLocationList(*VariableDie, dwarf::DW_AT_location, Offset);
+    return VariableDie;
+  }
+
+  // Check if variable is described by a DBG_VALUE instruction.
+  if (const MachineInstr *DVInsn = DV.getMInsn()) {
+    assert(DVInsn->getNumOperands() == 4);
+    if (DVInsn->getOperand(0).isReg()) {
+      const MachineOperand RegOp = DVInsn->getOperand(0);
+      // If the second operand is an immediate, this is an indirect value.
+      if (DVInsn->getOperand(1).isImm()) {
+        MachineLocation Location(RegOp.getReg(),
+                                 DVInsn->getOperand(1).getImm());
+        addVariableAddress(DV, *VariableDie, Location);
+      } else if (RegOp.getReg())
+        addVariableAddress(DV, *VariableDie, MachineLocation(RegOp.getReg()));
+    } else if (DVInsn->getOperand(0).isImm())
+      addConstantValue(*VariableDie, DVInsn->getOperand(0), DV.getType());
+    else if (DVInsn->getOperand(0).isFPImm())
+      addConstantFPValue(*VariableDie, DVInsn->getOperand(0));
+    else if (DVInsn->getOperand(0).isCImm())
+      addConstantValue(*VariableDie, DVInsn->getOperand(0).getCImm(),
+                       DV.getType());
+
+    return VariableDie;
+  }
+
+  // .. else use frame index.
+  int FI = DV.getFrameIndex();
+  if (FI != ~0) {
+    unsigned FrameReg = 0;
+    const TargetFrameLowering *TFI =
+        Asm->TM.getSubtargetImpl()->getFrameLowering();
+    int Offset = TFI->getFrameIndexReference(*Asm->MF, FI, FrameReg);
+    MachineLocation Location(FrameReg, Offset);
+    addVariableAddress(DV, *VariableDie, Location);
+  }
+
+  return VariableDie;
+}
+
+std::unique_ptr<DIE> DwarfCompileUnit::constructVariableDIE(
+    DbgVariable &DV, const LexicalScope &Scope, DIE *&ObjectPointer) {
+  auto Var = constructVariableDIE(DV, Scope.isAbstractScope());
+  if (DV.isObjectPointer())
+    ObjectPointer = Var.get();
+  return Var;
 }
 
 } // end llvm namespace
