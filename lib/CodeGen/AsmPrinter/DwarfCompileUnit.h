@@ -115,6 +115,11 @@ public:
   DIE *createScopeChildrenDIE(LexicalScope *Scope,
                               SmallVectorImpl<std::unique_ptr<DIE>> &Children,
                               unsigned *ChildScopeCount = nullptr);
+
+  /// \brief Construct a DIE for this subprogram scope.
+  void constructSubprogramScopeDIE(LexicalScope *Scope);
+
+  DIE *createAndAddScopeChildren(LexicalScope *Scope, DIE &ScopeDIE);
 };
 
 } // end llvm namespace
