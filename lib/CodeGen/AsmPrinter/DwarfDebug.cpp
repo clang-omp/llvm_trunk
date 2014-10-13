@@ -335,39 +335,17 @@ void DwarfDebug::constructAbstractSubprogramScopeDIE(LexicalScope *Scope) {
   assert(Scope->isAbstractScope());
   assert(!Scope->getInlinedAt());
 
-  DISubprogram SP(Scope->getScopeNode());
-
-  ProcessedSPNodes.insert(SP);
+  const MDNode *SP = Scope->getScopeNode();
 
   DIE *&AbsDef = AbstractSPDies[SP];
   if (AbsDef)
     return;
 
+  ProcessedSPNodes.insert(SP);
+
   // Find the subprogram's DwarfCompileUnit in the SPMap in case the subprogram
   // was inlined from another compile unit.
-  DwarfCompileUnit &SPCU = *SPMap[SP];
-  DIE *ContextDIE;
-
-  // Some of this is duplicated from DwarfUnit::getOrCreateSubprogramDIE, with
-  // the important distinction that the DIDescriptor is not associated with the
-  // DIE (since the DIDescriptor will be associated with the concrete DIE, if
-  // any). It could be refactored to some common utility function.
-  if (DISubprogram SPDecl = SP.getFunctionDeclaration()) {
-    ContextDIE = &SPCU.getUnitDie();
-    SPCU.getOrCreateSubprogramDIE(SPDecl);
-  } else
-    ContextDIE = SPCU.getOrCreateContextDIE(resolve(SP.getContext()));
-
-  // Passing null as the associated DIDescriptor because the abstract definition
-  // shouldn't be found by lookup.
-  AbsDef = &SPCU.createAndAddDIE(dwarf::DW_TAG_subprogram, *ContextDIE,
-                                 DIDescriptor());
-  SPCU.applySubprogramAttributesToDefinition(SP, *AbsDef);
-
-  if (SPCU.getCUNode().getEmissionKind() != DIBuilder::LineTablesOnly)
-    SPCU.addUInt(*AbsDef, dwarf::DW_AT_inline, None, dwarf::DW_INL_inlined);
-  if (DIE *ObjectPointer = SPCU.createAndAddScopeChildren(Scope, *AbsDef))
-    SPCU.addDIEEntry(*AbsDef, dwarf::DW_AT_object_pointer, *ObjectPointer);
+  AbsDef = &SPMap[SP]->constructAbstractSubprogramScopeDIE(Scope);
 }
 
 void DwarfDebug::addGnuPubAttributes(DwarfUnit &U, DIE &D) const {
@@ -535,38 +513,8 @@ void DwarfDebug::finishVariableDefinitions() {
 }
 
 void DwarfDebug::finishSubprogramDefinitions() {
-  const Module *M = MMI->getModule();
-
-  NamedMDNode *CU_Nodes = M->getNamedMetadata("llvm.dbg.cu");
-  for (MDNode *N : CU_Nodes->operands()) {
-    DICompileUnit TheCU(N);
-    // Construct subprogram DIE and add variables DIEs.
-    DwarfCompileUnit *SPCU =
-        static_cast<DwarfCompileUnit *>(CUMap.lookup(TheCU));
-    DIArray Subprograms = TheCU.getSubprograms();
-    for (unsigned i = 0, e = Subprograms.getNumElements(); i != e; ++i) {
-      DISubprogram SP(Subprograms.getElement(i));
-      // Perhaps the subprogram is in another CU (such as due to comdat
-      // folding, etc), in which case ignore it here.
-      if (SPMap[SP] != SPCU)
-        continue;
-      DIE *D = SPCU->getDIE(SP);
-      if (DIE *AbsSPDIE = AbstractSPDies.lookup(SP)) {
-        if (D)
-          // If this subprogram has an abstract definition, reference that
-          SPCU->addDIEEntry(*D, dwarf::DW_AT_abstract_origin, *AbsSPDIE);
-      } else {
-        if (!D && TheCU.getEmissionKind() != DIBuilder::LineTablesOnly)
-          // Lazily construct the subprogram if we didn't see either concrete or
-          // inlined versions during codegen. (except in -gmlt ^ where we want
-          // to omit these entirely)
-          D = SPCU->getOrCreateSubprogramDIE(SP);
-        if (D)
-          // And attach the attributes
-          SPCU->applySubprogramAttributesToDefinition(SP, *D);
-      }
-    }
-  }
+  for (const auto &P : SPMap)
+    P.second->finishSubprogramDefinition(DISubprogram(P.first));
 }
 
 

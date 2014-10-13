@@ -217,7 +217,7 @@ define i32 @test25(i32 %a) {
   %div = sdiv i32 %shl, 2
   ret i32 %div
 ; CHECK-LABEL: @test25(
-; CHECK-NEXT: %div = shl nsw i32 %a, 1
+; CHECK-NEXT: %div = shl i32 %a, 1
 ; CHECK-NEXT: ret i32 %div
 }
 
@@ -226,7 +226,7 @@ define i32 @test26(i32 %a) {
   %div = sdiv i32 %mul, 3
   ret i32 %div
 ; CHECK-LABEL: @test26(
-; CHECK-NEXT: %div = shl nsw i32 %a, 2
+; CHECK-NEXT: %div = shl i32 %a, 2
 ; CHECK-NEXT: ret i32 %div
 }
 
@@ -246,4 +246,21 @@ define i32 @test28(i32 %a) {
 ; CHECK-LABEL: @test28(
 ; CHECK-NEXT: %div = mul nuw i32 %a, 12
 ; CHECK-NEXT: ret i32 %div
+}
+
+define i32 @test29(i32 %a) {
+  %mul = shl nsw i32 %a, 31
+  %div = sdiv i32 %mul, -2147483648
+  ret i32 %div
+; CHECK-LABEL: @test29(
+; CHECK-NEXT: %[[and:.*]] = and i32 %a, 1
+; CHECK-NEXT: ret i32 %[[and]]
+}
+
+define i32 @test30(i32 %a) {
+  %mul = shl nuw i32 %a, 31
+  %div = udiv i32 %mul, -2147483648
+  ret i32 %div
+; CHECK-LABEL: @test30(
+; CHECK-NEXT: ret i32 %a
 }

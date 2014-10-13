@@ -991,6 +991,7 @@ static bool hasShortDelaySlot(unsigned Opcode) {
   switch (Opcode) {
     case Mips::JALS_MM:
     case Mips::JALRS_MM:
+    case Mips::JALRS16_MM:
     case Mips::BGEZALS_MM:
     case Mips::BLTZALS_MM:
       return true;
@@ -1115,6 +1116,34 @@ bool MipsAsmParser::processInstruction(MCInst &Inst, SMLoc IDLoc,
       }
     } // for
   }   // if load/store
+
+  // TODO: Handle this with the AsmOperandClass.PredicateMethod.
+  if (inMicroMipsMode()) {
+    MCOperand Opnd;
+    int Imm;
+
+    switch (Inst.getOpcode()) {
+      default:
+        break;
+      case Mips::ADDIUS5_MM:
+        Opnd = Inst.getOperand(2);
+        if (!Opnd.isImm())
+          return Error(IDLoc, "expected immediate operand kind");
+        Imm = Opnd.getImm();
+        if (Imm < -8 || Imm > 7)
+          return Error(IDLoc, "immediate operand value out of range");
+        break;
+      case Mips::ADDIUSP_MM:
+        Opnd = Inst.getOperand(0);
+        if (!Opnd.isImm())
+          return Error(IDLoc, "expected immediate operand kind");
+        Imm = Opnd.getImm();
+        if (Imm < -1032 || Imm > 1028 || (Imm < 8 && Imm > -12) ||
+            Imm % 4 != 0)
+          return Error(IDLoc, "immediate operand value out of range");
+        break;
+    }
+  }
 
   if (needsExpansion(Inst))
     return expandInstruction(Inst, IDLoc, Instructions);
