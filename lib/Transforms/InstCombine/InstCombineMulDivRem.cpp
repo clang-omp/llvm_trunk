@@ -304,40 +304,32 @@ Instruction *InstCombiner::visitMul(BinaryOperator &I) {
   return Changed ? &I : nullptr;
 }
 
-//
-// Detect pattern:
-//
-// log2(Y*0.5)
-//
-// And check for corresponding fast math flags
-//
-
+/// Detect pattern log2(Y * 0.5) with corresponding fast math flags.
 static void detectLog2OfHalf(Value *&Op, Value *&Y, IntrinsicInst *&Log2) {
+  if (!Op->hasOneUse())
+    return;
 
-   if (!Op->hasOneUse())
-     return;
+  IntrinsicInst *II = dyn_cast<IntrinsicInst>(Op);
+  if (!II)
+    return;
+  if (II->getIntrinsicID() != Intrinsic::log2 || !II->hasUnsafeAlgebra())
+    return;
+  Log2 = II;
 
-   IntrinsicInst *II = dyn_cast<IntrinsicInst>(Op);
-   if (!II)
-     return;
-   if (II->getIntrinsicID() != Intrinsic::log2 || !II->hasUnsafeAlgebra())
-     return;
-   Log2 = II;
+  Value *OpLog2Of = II->getArgOperand(0);
+  if (!OpLog2Of->hasOneUse())
+    return;
 
-   Value *OpLog2Of = II->getArgOperand(0);
-   if (!OpLog2Of->hasOneUse())
-     return;
+  Instruction *I = dyn_cast<Instruction>(OpLog2Of);
+  if (!I)
+    return;
+  if (I->getOpcode() != Instruction::FMul || !I->hasUnsafeAlgebra())
+    return;
 
-   Instruction *I = dyn_cast<Instruction>(OpLog2Of);
-   if (!I)
-     return;
-   if (I->getOpcode() != Instruction::FMul || !I->hasUnsafeAlgebra())
-     return;
-
-   if (match(I->getOperand(0), m_SpecificFP(0.5)))
-     Y = I->getOperand(1);
-   else if (match(I->getOperand(1), m_SpecificFP(0.5)))
-     Y = I->getOperand(0);
+  if (match(I->getOperand(0), m_SpecificFP(0.5)))
+    Y = I->getOperand(1);
+  else if (match(I->getOperand(1), m_SpecificFP(0.5)))
+    Y = I->getOperand(0);
 }
 
 static bool isFiniteNonZeroFp(Constant *C) {
@@ -965,11 +957,17 @@ Instruction *InstCombiner::visitUDiv(BinaryOperator &I) {
     return Common;
 
   // (x lshr C1) udiv C2 --> x udiv (C2 << C1)
-  if (Constant *C2 = dyn_cast<Constant>(Op1)) {
+  {
     Value *X;
-    Constant *C1;
-    if (match(Op0, m_LShr(m_Value(X), m_Constant(C1))))
-      return BinaryOperator::CreateUDiv(X, ConstantExpr::getShl(C2, C1));
+    const APInt *C1, *C2;
+    if (match(Op0, m_LShr(m_Value(X), m_APInt(C1))) &&
+        match(Op1, m_APInt(C2))) {
+      bool Overflow;
+      APInt C2ShlC1 = C2->ushl_ov(*C1, Overflow);
+      if (!Overflow)
+        return BinaryOperator::CreateUDiv(
+            X, ConstantInt::get(X->getType(), C2ShlC1));
+    }
   }
 
   // (zext A) udiv (zext B) --> zext (A udiv B)
@@ -1318,15 +1316,15 @@ Instruction *InstCombiner::visitSRem(BinaryOperator &I) {
   if (Instruction *Common = commonIRemTransforms(I))
     return Common;
 
-  if (Value *RHSNeg = dyn_castNegVal(Op1))
-    if (!isa<Constant>(RHSNeg) ||
-        (isa<ConstantInt>(RHSNeg) &&
-         cast<ConstantInt>(RHSNeg)->getValue().isStrictlyPositive())) {
-      // X % -Y -> X % Y
+  {
+    const APInt *Y;
+    // X % -Y -> X % Y
+    if (match(Op1, m_APInt(Y)) && Y->isNegative() && !Y->isMinSignedValue()) {
       Worklist.AddValue(I.getOperand(1));
-      I.setOperand(1, RHSNeg);
+      I.setOperand(1, ConstantInt::get(I.getType(), -*Y));
       return &I;
     }
+  }
 
   // If the sign bits of both operands are zero (i.e. we can prove they are
   // unsigned inputs), turn this into a urem.
