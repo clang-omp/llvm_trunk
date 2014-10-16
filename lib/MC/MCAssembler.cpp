@@ -291,7 +291,9 @@ MCSectionData::MCSectionData(const MCSection &_Section, MCAssembler *A)
   : Section(&_Section),
     Ordinal(~UINT32_C(0)),
     Alignment(1),
-    BundleLockState(NotBundleLocked), BundleGroupBeforeFirstInst(false),
+    BundleLockState(NotBundleLocked),
+    BundleLockNestingDepth(0),
+    BundleGroupBeforeFirstInst(false),
     HasInstructions(false)
 {
   if (A)
@@ -328,6 +330,25 @@ MCSectionData::getSubsectionInsertionPoint(unsigned Subsection) {
   return IP;
 }
 
+void MCSectionData::setBundleLockState(BundleLockStateType NewState) {
+  if (NewState == NotBundleLocked) {
+    if (BundleLockNestingDepth == 0) {
+      report_fatal_error("Mismatched bundle_lock/unlock directives");
+    }
+    if (--BundleLockNestingDepth == 0) {
+      BundleLockState = NotBundleLocked;
+    }
+    return;
+  }
+
+  // If any of the directives is an align_to_end directive, the whole nested
+  // group is align_to_end. So don't downgrade from align_to_end to just locked.
+  if (BundleLockState != BundleLockedAlignToEnd) {
+    BundleLockState = NewState;
+  }
+  ++BundleLockNestingDepth;
+}
+
 /* *** */
 
 MCSymbolData::MCSymbolData() : Symbol(nullptr) {}
@@ -345,9 +366,9 @@ MCSymbolData::MCSymbolData(const MCSymbol &_Symbol, MCFragment *_Fragment,
 MCAssembler::MCAssembler(MCContext &Context_, MCAsmBackend &Backend_,
                          MCCodeEmitter &Emitter_, MCObjectWriter &Writer_,
                          raw_ostream &OS_)
-  : Context(Context_), Backend(Backend_), Emitter(Emitter_), Writer(Writer_),
-    OS(OS_), BundleAlignSize(0), RelaxAll(false), NoExecStack(false),
-    SubsectionsViaSymbols(false), ELFHeaderEFlags(0) {
+    : Context(Context_), Backend(Backend_), Emitter(Emitter_), Writer(Writer_),
+      OS(OS_), BundleAlignSize(0), RelaxAll(false),
+      SubsectionsViaSymbols(false), ELFHeaderEFlags(0) {
   VersionMinInfo.Major = 0; // Major version == 0 for "none specified"
 }
 
@@ -366,7 +387,6 @@ void MCAssembler::reset() {
   ThumbFuncs.clear();
   BundleAlignSize = 0;
   RelaxAll = false;
-  NoExecStack = false;
   SubsectionsViaSymbols = false;
   ELFHeaderEFlags = 0;
   LOHContainer.reset();

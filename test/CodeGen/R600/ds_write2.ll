@@ -320,6 +320,53 @@ define void @simple_write2_two_val_f64(double addrspace(1)* %C, double addrspace
   ret void
 }
 
+@foo = addrspace(3) global [4 x i32] zeroinitializer, align 4
+
+; SI-LABEL: @store_constant_adjacent_offsets
+; SI: V_MOV_B32_e32 [[ZERO:v[0-9]+]], 0{{$}}
+; SI: DS_WRITE2_B32 [[ZERO]], v{{[0-9]+}}, v{{[0-9]+}} offset0:0 offset1:1
+define void @store_constant_adjacent_offsets() {
+  store i32 123, i32 addrspace(3)* getelementptr inbounds ([4 x i32] addrspace(3)* @foo, i32 0, i32 0), align 4
+  store i32 123, i32 addrspace(3)* getelementptr inbounds ([4 x i32] addrspace(3)* @foo, i32 0, i32 1), align 4
+  ret void
+}
+
+; SI-LABEL: @store_constant_disjoint_offsets
+; SI-DAG: V_MOV_B32_e32 [[VAL:v[0-9]+]], 0x7b{{$}}
+; SI-DAG: V_MOV_B32_e32 [[ZERO:v[0-9]+]], 0{{$}}
+; SI: DS_WRITE2_B32 [[ZERO]], [[VAL]], [[VAL]] offset0:0 offset1:2
+define void @store_constant_disjoint_offsets() {
+  store i32 123, i32 addrspace(3)* getelementptr inbounds ([4 x i32] addrspace(3)* @foo, i32 0, i32 0), align 4
+  store i32 123, i32 addrspace(3)* getelementptr inbounds ([4 x i32] addrspace(3)* @foo, i32 0, i32 2), align 4
+  ret void
+}
+
+@bar = addrspace(3) global [4 x i64] zeroinitializer, align 4
+
+; SI-LABEL: @store_misaligned64_constant_offsets
+; SI: V_MOV_B32_e32 [[ZERO:v[0-9]+]], 0{{$}}
+; SI: DS_WRITE2_B32 [[ZERO]], v{{[0-9]+}}, v{{[0-9]+}} offset0:0 offset1:1
+; SI: DS_WRITE2_B32 [[ZERO]], v{{[0-9]+}}, v{{[0-9]+}} offset0:2 offset1:3
+define void @store_misaligned64_constant_offsets() {
+  store i64 123, i64 addrspace(3)* getelementptr inbounds ([4 x i64] addrspace(3)* @bar, i32 0, i32 0), align 4
+  store i64 123, i64 addrspace(3)* getelementptr inbounds ([4 x i64] addrspace(3)* @bar, i32 0, i32 1), align 4
+  ret void
+}
+
+@bar.large = addrspace(3) global [4096 x i64] zeroinitializer, align 4
+
+; SI-LABEL: @store_misaligned64_constant_large_offsets
+; SI-DAG: V_MOV_B32_e32 [[BASE0:v[0-9]+]], 0x7ff8{{$}}
+; SI-DAG: V_MOV_B32_e32 [[BASE1:v[0-9]+]], 0x4000{{$}}
+; SI-DAG: DS_WRITE2_B32 [[BASE0]], v{{[0-9]+}}, v{{[0-9]+}} offset0:0 offset1:1
+; SI-DAG: DS_WRITE2_B32 [[BASE1]], v{{[0-9]+}}, v{{[0-9]+}} offset0:0 offset1:1
+; SI: S_ENDPGM
+define void @store_misaligned64_constant_large_offsets() {
+  store i64 123, i64 addrspace(3)* getelementptr inbounds ([4096 x i64] addrspace(3)* @bar.large, i32 0, i32 2048), align 4
+  store i64 123, i64 addrspace(3)* getelementptr inbounds ([4096 x i64] addrspace(3)* @bar.large, i32 0, i32 4095), align 4
+  ret void
+}
+
 @sgemm.lA = internal unnamed_addr addrspace(3) global [264 x float] zeroinitializer, align 4
 @sgemm.lB = internal unnamed_addr addrspace(3) global [776 x float] zeroinitializer, align 4
 

@@ -107,7 +107,6 @@ STATISTIC(NumRewrittenCopies, "Number of copies rewritten");
 
 namespace {
   class PeepholeOptimizer : public MachineFunctionPass {
-    MachineFunction *MF;
     const TargetInstrInfo *TII;
     const TargetRegisterInfo *TRI;
     MachineRegisterInfo   *MRI;
@@ -135,6 +134,7 @@ namespace {
     bool optimizeExtInstr(MachineInstr *MI, MachineBasicBlock *MBB,
                           SmallPtrSetImpl<MachineInstr*> &LocalMIs);
     bool optimizeSelect(MachineInstr *MI);
+    bool optimizeCondBranch(MachineInstr *MI);
     bool optimizeCopyOrBitcast(MachineInstr *MI);
     bool optimizeCoalescableCopy(MachineInstr *MI);
     bool optimizeUncoalescableCopy(MachineInstr *MI,
@@ -496,6 +496,12 @@ bool PeepholeOptimizer::optimizeSelect(MachineInstr *MI) {
   MI->eraseFromParent();
   ++NumSelects;
   return true;
+}
+
+/// \brief Check if a simpler conditional branch can be
+// generated
+bool PeepholeOptimizer::optimizeCondBranch(MachineInstr *MI) {
+  return TII->optimizeCondBranch(MI);
 }
 
 /// \brief Check if the registers defined by the pair (RegisterClass, SubReg)
@@ -1045,25 +1051,24 @@ bool PeepholeOptimizer::foldImmediate(MachineInstr *MI, MachineBasicBlock *MBB,
   return false;
 }
 
-bool PeepholeOptimizer::runOnMachineFunction(MachineFunction &mf) {
-  if (skipOptnoneFunction(*mf.getFunction()))
+bool PeepholeOptimizer::runOnMachineFunction(MachineFunction &MF) {
+  if (skipOptnoneFunction(*MF.getFunction()))
     return false;
 
   DEBUG(dbgs() << "********** PEEPHOLE OPTIMIZER **********\n");
-  DEBUG(dbgs() << "********** Function: " << mf.getName() << '\n');
+  DEBUG(dbgs() << "********** Function: " << MF.getName() << '\n');
 
   if (DisablePeephole)
     return false;
 
-  MF = &mf;
-  TII = MF->getSubtarget().getInstrInfo();
-  TRI = MF->getSubtarget().getRegisterInfo();
-  MRI = &MF->getRegInfo();
+  TII = MF.getSubtarget().getInstrInfo();
+  TRI = MF.getSubtarget().getRegisterInfo();
+  MRI = &MF.getRegInfo();
   DT  = Aggressive ? &getAnalysis<MachineDominatorTree>() : nullptr;
 
   bool Changed = false;
 
-  for (MachineFunction::iterator I = MF->begin(), E = MF->end(); I != E; ++I) {
+  for (MachineFunction::iterator I = MF.begin(), E = MF.end(); I != E; ++I) {
     MachineBasicBlock *MBB = &*I;
 
     bool SeenMoveImm = false;
@@ -1100,6 +1105,11 @@ bool PeepholeOptimizer::runOnMachineFunction(MachineFunction &mf) {
           (MI->isSelect() && optimizeSelect(MI))) {
         // MI is deleted.
         LocalMIs.erase(MI);
+        Changed = true;
+        continue;
+      }
+
+      if (MI->isConditionalBranch() && optimizeCondBranch(MI)) {
         Changed = true;
         continue;
       }

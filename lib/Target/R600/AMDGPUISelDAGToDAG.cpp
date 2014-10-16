@@ -787,6 +787,21 @@ bool AMDGPUDAGToDAGISel::SelectDS1Addr1Offset(SDValue Addr, SDValue &Base,
     }
   }
 
+  // If we have a constant address, prefer to put the constant into the
+  // offset. This can save moves to load the constant address since multiple
+  // operations can share the zero base address register, and enables merging
+  // into read2 / write2 instructions.
+  if (const ConstantSDNode *CAddr = dyn_cast<ConstantSDNode>(Addr)) {
+    if (isUInt<16>(CAddr->getZExtValue())) {
+      SDValue Zero = CurDAG->getTargetConstant(0, MVT::i32);
+      MachineSDNode *MovZero = CurDAG->getMachineNode(AMDGPU::V_MOV_B32_e32,
+                                 SDLoc(Addr), MVT::i32, Zero);
+      Base = SDValue(MovZero, 0);
+      Offset = Addr;
+      return true;
+    }
+  }
+
   // default case
   Base = Addr;
   Offset = CurDAG->getTargetConstant(0, MVT::i16);
@@ -805,6 +820,23 @@ bool AMDGPUDAGToDAGISel::SelectDS64Bit4ByteAligned(SDValue Addr, SDValue &Base,
     // (add n0, c0)
     if (isDSOffsetLegal(N0, DWordOffset1, 8)) {
       Base = N0;
+      Offset0 = CurDAG->getTargetConstant(DWordOffset0, MVT::i8);
+      Offset1 = CurDAG->getTargetConstant(DWordOffset1, MVT::i8);
+      return true;
+    }
+  }
+
+  if (const ConstantSDNode *CAddr = dyn_cast<ConstantSDNode>(Addr)) {
+    unsigned DWordOffset0 = CAddr->getZExtValue() / 4;
+    unsigned DWordOffset1 = DWordOffset0 + 1;
+    assert(4 * DWordOffset0 == CAddr->getZExtValue());
+
+    if (isUInt<8>(DWordOffset0) && isUInt<8>(DWordOffset1)) {
+      SDValue Zero = CurDAG->getTargetConstant(0, MVT::i32);
+      MachineSDNode *MovZero
+        = CurDAG->getMachineNode(AMDGPU::V_MOV_B32_e32,
+                                 SDLoc(Addr), MVT::i32, Zero);
+      Base = SDValue(MovZero, 0);
       Offset0 = CurDAG->getTargetConstant(DWordOffset0, MVT::i8);
       Offset1 = CurDAG->getTargetConstant(DWordOffset1, MVT::i8);
       return true;

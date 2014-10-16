@@ -594,7 +594,10 @@ private:
   unsigned Alignment;
 
   /// \brief Keeping track of bundle-locked state.
-  BundleLockStateType BundleLockState; 
+  BundleLockStateType BundleLockState;
+
+  /// \brief Current nesting depth of bundle_lock directives.
+  unsigned BundleLockNestingDepth;
 
   /// \brief We've seen a bundle_lock directive but not its first instruction
   /// yet.
@@ -666,9 +669,7 @@ public:
     return BundleLockState;
   }
 
-  void setBundleLockState(BundleLockStateType NewState) {
-    BundleLockState = NewState;
-  }
+  void setBundleLockState(BundleLockStateType NewState);
 
   bool isBundleGroupBeforeFirstInst() const {
     return BundleGroupBeforeFirstInst;
@@ -915,7 +916,6 @@ private:
   unsigned BundleAlignSize;
 
   unsigned RelaxAll : 1;
-  unsigned NoExecStack : 1;
   unsigned SubsectionsViaSymbols : 1;
 
   /// ELF specific e_header flags
@@ -1060,9 +1060,6 @@ public:
 
   bool getRelaxAll() const { return RelaxAll; }
   void setRelaxAll(bool Value) { RelaxAll = Value; }
-
-  bool getNoExecStack() const { return NoExecStack; }
-  void setNoExecStack(bool Value) { NoExecStack = Value; }
 
   bool isBundlingEnabled() const {
     return BundleAlignSize != 0;
