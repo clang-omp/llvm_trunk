@@ -3604,30 +3604,6 @@ void SelectionDAGBuilder::visitStore(const StoreInst &I) {
   DAG.setRoot(StoreNode);
 }
 
-static SDValue InsertFenceForAtomic(SDValue Chain, AtomicOrdering Order,
-                                    SynchronizationScope Scope,
-                                    bool Before, SDLoc dl,
-                                    SelectionDAG &DAG,
-                                    const TargetLowering &TLI) {
-  // Fence, if necessary
-  if (Before) {
-    if (Order == AcquireRelease || Order == SequentiallyConsistent)
-      Order = Release;
-    else if (Order == Acquire || Order == Monotonic || Order == Unordered)
-      return Chain;
-  } else {
-    if (Order == AcquireRelease)
-      Order = Acquire;
-    else if (Order == Release || Order == Monotonic || Order == Unordered)
-      return Chain;
-  }
-  SDValue Ops[3];
-  Ops[0] = Chain;
-  Ops[1] = DAG.getConstant(Order, TLI.getPointerTy());
-  Ops[2] = DAG.getConstant(Scope, TLI.getPointerTy());
-  return DAG.getNode(ISD::ATOMIC_FENCE, dl, MVT::Other, Ops);
-}
-
 void SelectionDAGBuilder::visitAtomicCmpXchg(const AtomicCmpXchgInst &I) {
   SDLoc dl = getCurSDLoc();
   AtomicOrdering SuccessOrder = I.getSuccessOrdering();
@@ -3636,26 +3612,15 @@ void SelectionDAGBuilder::visitAtomicCmpXchg(const AtomicCmpXchgInst &I) {
 
   SDValue InChain = getRoot();
 
-  const TargetLowering &TLI = DAG.getTargetLoweringInfo();
-  if (TLI.getInsertFencesForAtomic())
-    InChain =
-        InsertFenceForAtomic(InChain, SuccessOrder, Scope, true, dl, DAG, TLI);
-
   MVT MemVT = getValue(I.getCompareOperand()).getSimpleValueType();
   SDVTList VTs = DAG.getVTList(MemVT, MVT::i1, MVT::Other);
   SDValue L = DAG.getAtomicCmpSwap(
       ISD::ATOMIC_CMP_SWAP_WITH_SUCCESS, dl, MemVT, VTs, InChain,
       getValue(I.getPointerOperand()), getValue(I.getCompareOperand()),
       getValue(I.getNewValOperand()), MachinePointerInfo(I.getPointerOperand()),
-      0 /* Alignment */,
-      TLI.getInsertFencesForAtomic() ? Monotonic : SuccessOrder,
-      TLI.getInsertFencesForAtomic() ? Monotonic : FailureOrder, Scope);
+      /*Alignment=*/ 0, SuccessOrder, FailureOrder, Scope);
 
   SDValue OutChain = L.getValue(2);
-
-  if (TLI.getInsertFencesForAtomic())
-    OutChain = InsertFenceForAtomic(OutChain, SuccessOrder, Scope, false, dl,
-                                    DAG, TLI);
 
   setValue(&I, L);
   DAG.setRoot(OutChain);
@@ -3683,21 +3648,16 @@ void SelectionDAGBuilder::visitAtomicRMW(const AtomicRMWInst &I) {
 
   SDValue InChain = getRoot();
 
-  const TargetLowering &TLI = DAG.getTargetLoweringInfo();
-  if (TLI.getInsertFencesForAtomic())
-    InChain = InsertFenceForAtomic(InChain, Order, Scope, true, dl, DAG, TLI);
-
-  SDValue L = DAG.getAtomic(
-      NT, dl, getValue(I.getValOperand()).getSimpleValueType(), InChain,
-      getValue(I.getPointerOperand()), getValue(I.getValOperand()),
-      I.getPointerOperand(), 0 /* Alignment */,
-      TLI.getInsertFencesForAtomic() ? Monotonic : Order, Scope);
+  SDValue L =
+    DAG.getAtomic(NT, dl,
+                  getValue(I.getValOperand()).getSimpleValueType(),
+                  InChain,
+                  getValue(I.getPointerOperand()),
+                  getValue(I.getValOperand()),
+                  I.getPointerOperand(),
+                  /* Alignment=*/ 0, Order, Scope);
 
   SDValue OutChain = L.getValue(1);
-
-  if (TLI.getInsertFencesForAtomic())
-    OutChain =
-        InsertFenceForAtomic(OutChain, Order, Scope, false, dl, DAG, TLI);
 
   setValue(&I, L);
   DAG.setRoot(OutChain);
@@ -3736,15 +3696,12 @@ void SelectionDAGBuilder::visitAtomicLoad(const LoadInst &I) {
                                               DAG.getEVTAlignment(VT));
 
   InChain = TLI.prepareVolatileOrAtomicLoad(InChain, dl, DAG);
-  SDValue L = DAG.getAtomic(
-      ISD::ATOMIC_LOAD, dl, VT, VT, InChain, getValue(I.getPointerOperand()),
-      MMO, TLI.getInsertFencesForAtomic() ? Monotonic : Order, Scope);
+  SDValue L =
+      DAG.getAtomic(ISD::ATOMIC_LOAD, dl, VT, VT, InChain,
+                    getValue(I.getPointerOperand()), MMO,
+                    Order, Scope);
 
   SDValue OutChain = L.getValue(1);
-
-  if (TLI.getInsertFencesForAtomic())
-    OutChain = InsertFenceForAtomic(OutChain, Order, Scope, false, dl,
-                                    DAG, TLI);
 
   setValue(&I, L);
   DAG.setRoot(OutChain);
@@ -3764,17 +3721,13 @@ void SelectionDAGBuilder::visitAtomicStore(const StoreInst &I) {
   if (I.getAlignment() < VT.getSizeInBits() / 8)
     report_fatal_error("Cannot generate unaligned atomic store");
 
-  if (TLI.getInsertFencesForAtomic())
-    InChain = InsertFenceForAtomic(InChain, Order, Scope, true, dl, DAG, TLI);
-
-  SDValue OutChain = DAG.getAtomic(
-      ISD::ATOMIC_STORE, dl, VT, InChain, getValue(I.getPointerOperand()),
-      getValue(I.getValueOperand()), I.getPointerOperand(), I.getAlignment(),
-      TLI.getInsertFencesForAtomic() ? Monotonic : Order, Scope);
-
-  if (TLI.getInsertFencesForAtomic())
-    OutChain =
-        InsertFenceForAtomic(OutChain, Order, Scope, false, dl, DAG, TLI);
+  SDValue OutChain =
+    DAG.getAtomic(ISD::ATOMIC_STORE, dl, VT,
+                  InChain,
+                  getValue(I.getPointerOperand()),
+                  getValue(I.getValueOperand()),
+                  I.getPointerOperand(), I.getAlignment(),
+                  Order, Scope);
 
   DAG.setRoot(OutChain);
 }
@@ -5482,35 +5435,11 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
   }
 }
 
-void SelectionDAGBuilder::LowerCallTo(ImmutableCallSite CS, SDValue Callee,
-                                      bool isTailCall,
-                                      MachineBasicBlock *LandingPad) {
-  const TargetLowering &TLI = DAG.getTargetLoweringInfo();
-  PointerType *PT = cast<PointerType>(CS.getCalledValue()->getType());
-  FunctionType *FTy = cast<FunctionType>(PT->getElementType());
-  Type *RetTy = FTy->getReturnType();
+std::pair<SDValue, SDValue>
+SelectionDAGBuilder::lowerInvokable(TargetLowering::CallLoweringInfo &CLI,
+                                    MachineBasicBlock *LandingPad) {
   MachineModuleInfo &MMI = DAG.getMachineFunction().getMMI();
   MCSymbol *BeginLabel = nullptr;
-
-  TargetLowering::ArgListTy Args;
-  TargetLowering::ArgListEntry Entry;
-  Args.reserve(CS.arg_size());
-
-  for (ImmutableCallSite::arg_iterator i = CS.arg_begin(), e = CS.arg_end();
-       i != e; ++i) {
-    const Value *V = *i;
-
-    // Skip empty types
-    if (V->getType()->isEmptyTy())
-      continue;
-
-    SDValue ArgNode = getValue(V);
-    Entry.Node = ArgNode; Entry.Ty = V->getType();
-
-    // Skip the first return-type Attribute to get to params.
-    Entry.setAttributes(&CS, i - CS.arg_begin() + 1);
-    Args.push_back(Entry);
-  }
 
   if (LandingPad) {
     // Insert a label before the invoke call to mark the try range.  This can be
@@ -5532,24 +5461,17 @@ void SelectionDAGBuilder::LowerCallTo(ImmutableCallSite CS, SDValue Callee,
     // this call might not return.
     (void)getRoot();
     DAG.setRoot(DAG.getEHLabel(getCurSDLoc(), getControlRoot(), BeginLabel));
+
+    CLI.setChain(getRoot());
   }
 
-  // Check if target-independent constraints permit a tail call here.
-  // Target-dependent constraints are checked within TLI.LowerCallTo.
-  if (isTailCall && !isInTailCallPosition(CS, DAG.getTarget()))
-    isTailCall = false;
+  const TargetLowering *TLI = TM.getSubtargetImpl()->getTargetLowering();
+  std::pair<SDValue, SDValue> Result = TLI->LowerCallTo(CLI);
 
-  TargetLowering::CallLoweringInfo CLI(DAG);
-  CLI.setDebugLoc(getCurSDLoc()).setChain(getRoot())
-    .setCallee(RetTy, FTy, Callee, std::move(Args), CS).setTailCall(isTailCall);
-
-  std::pair<SDValue,SDValue> Result = TLI.LowerCallTo(CLI);
-  assert((isTailCall || Result.second.getNode()) &&
+  assert((CLI.IsTailCall || Result.second.getNode()) &&
          "Non-null chain expected with non-tail call!");
   assert((Result.second.getNode() || !Result.first.getNode()) &&
          "Null value expected with tail call!");
-  if (Result.first.getNode())
-    setValue(CS.getInstruction(), Result.first);
 
   if (!Result.second.getNode()) {
     // As a special case, a null chain means that a tail call has been emitted
@@ -5572,6 +5494,50 @@ void SelectionDAGBuilder::LowerCallTo(ImmutableCallSite CS, SDValue Callee,
     // Inform MachineModuleInfo of range.
     MMI.addInvoke(LandingPad, BeginLabel, EndLabel);
   }
+
+  return Result;
+}
+
+void SelectionDAGBuilder::LowerCallTo(ImmutableCallSite CS, SDValue Callee,
+                                      bool isTailCall,
+                                      MachineBasicBlock *LandingPad) {
+  PointerType *PT = cast<PointerType>(CS.getCalledValue()->getType());
+  FunctionType *FTy = cast<FunctionType>(PT->getElementType());
+  Type *RetTy = FTy->getReturnType();
+
+  TargetLowering::ArgListTy Args;
+  TargetLowering::ArgListEntry Entry;
+  Args.reserve(CS.arg_size());
+
+  for (ImmutableCallSite::arg_iterator i = CS.arg_begin(), e = CS.arg_end();
+       i != e; ++i) {
+    const Value *V = *i;
+
+    // Skip empty types
+    if (V->getType()->isEmptyTy())
+      continue;
+
+    SDValue ArgNode = getValue(V);
+    Entry.Node = ArgNode; Entry.Ty = V->getType();
+
+    // Skip the first return-type Attribute to get to params.
+    Entry.setAttributes(&CS, i - CS.arg_begin() + 1);
+    Args.push_back(Entry);
+  }
+
+  // Check if target-independent constraints permit a tail call here.
+  // Target-dependent constraints are checked within TLI->LowerCallTo.
+  if (isTailCall && !isInTailCallPosition(CS, DAG.getTarget()))
+    isTailCall = false;
+
+  TargetLowering::CallLoweringInfo CLI(DAG);
+  CLI.setDebugLoc(getCurSDLoc()).setChain(getRoot())
+    .setCallee(RetTy, FTy, Callee, std::move(Args), CS)
+    .setTailCall(isTailCall);
+  std::pair<SDValue,SDValue> Result = lowerInvokable(CLI, LandingPad);
+
+  if (Result.first.getNode())
+    setValue(CS.getInstruction(), Result.first);
 }
 
 /// IsOnlyUsedInZeroEqualityComparison - Return true if it only matters that the
@@ -6848,8 +6814,7 @@ SelectionDAGBuilder::LowerCallOperands(const CallInst &CI, unsigned ArgIdx,
     .setCallee(CI.getCallingConv(), retTy, Callee, std::move(Args), NumArgs)
     .setDiscardResult(!CI.use_empty());
 
-  const TargetLowering &TLI = DAG.getTargetLoweringInfo();
-  return TLI.LowerCallTo(CLI);
+  return lowerInvokable(CLI, nullptr);
 }
 
 /// \brief Add a stack map intrinsic call's live variable operands to a stackmap
@@ -6979,10 +6944,7 @@ void SelectionDAGBuilder::visitPatchpoint(const CallInst &CI) {
   std::pair<SDValue, SDValue> Result =
     LowerCallOperands(CI, NumMetaOpers, NumCallArgs, Callee, isAnyRegCC);
 
-  // Set the root to the target-lowered call chain.
   SDValue Chain = Result.second;
-  DAG.setRoot(Chain);
-
   SDNode *CallEnd = Chain.getNode();
   if (hasDef && (CallEnd->getOpcode() == ISD::CopyFromReg))
     CallEnd = CallEnd->getOperand(0).getNode();

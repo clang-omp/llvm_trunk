@@ -866,7 +866,7 @@ void ELFObjectWriter::RecordRelocation(const MCAssembler &Asm,
         (SymA && !SymA->isUndefined()) ? &SymA->getSection() : nullptr;
     auto *ELFSec = cast_or_null<MCSectionELF>(SecA);
     MCSymbol *SectionSymbol =
-        ELFSec ? Asm.getContext().GetOrCreateSymbol(ELFSec->getSectionName())
+        ELFSec ? Asm.getContext().getOrCreateSectionSymbol(*ELFSec)
                : nullptr;
     ELFRelocationEntry Rec(FixupOffset, SectionSymbol, Type, Addend);
     Relocations[FixupSection].push_back(Rec);
