@@ -2578,6 +2578,8 @@ bool llvm::isSafeToSpeculativelyExecute(const Value *V,
        case Intrinsic::fma:
        case Intrinsic::fmuladd:
        case Intrinsic::fabs:
+       case Intrinsic::minnum:
+       case Intrinsic::maxnum:
          return true;
        // TODO: some fp intrinsics are marked as having the same error handling
        // as libm. They're safe to speculate when they won't error.
@@ -2621,6 +2623,10 @@ bool llvm::isKnownNonNull(const Value *V, const TargetLibraryInfo *TLI) {
   // Global values are not null unless extern weak.
   if (const GlobalValue *GV = dyn_cast<GlobalValue>(V))
     return !GV->hasExternalWeakLinkage();
+
+  // A Load tagged w/nonnull metadata is never null. 
+  if (const LoadInst *LI = dyn_cast<LoadInst>(V))
+    return LI->getMetadata(LLVMContext::MD_nonnull);
 
   if (ImmutableCallSite CS = V)
     if (CS.isReturnNonNull())
