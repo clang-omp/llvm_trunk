@@ -18,8 +18,9 @@
 #include "llvm/Target/TargetLoweringObjectFile.h"
 
 namespace llvm {
-DwarfFile::DwarfFile(AsmPrinter *AP, StringRef Pref, BumpPtrAllocator &DA)
-    : Asm(AP), StrPool(DA, *Asm, Pref) {}
+DwarfFile::DwarfFile(AsmPrinter *AP, DwarfDebug &DD, StringRef Pref,
+                     BumpPtrAllocator &DA)
+    : Asm(AP), DD(DD), StrPool(DA, *Asm, Pref) {}
 
 DwarfFile::~DwarfFile() {}
 
@@ -48,7 +49,7 @@ void DwarfFile::addUnit(std::unique_ptr<DwarfUnit> U) {
 
 // Emit the various dwarf units to the unit section USection with
 // the abbreviations going into ASection.
-void DwarfFile::emitUnits(DwarfDebug *DD, const MCSymbol *ASectionSym) {
+void DwarfFile::emitUnits(const MCSymbol *ASectionSym) {
   for (const auto &TheU : CUs) {
     DIE &Die = TheU->getUnitDie();
     const MCSection *USection = TheU->getSection();
@@ -63,10 +64,11 @@ void DwarfFile::emitUnits(DwarfDebug *DD, const MCSymbol *ASectionSym) {
 
     TheU->emitHeader(ASectionSym);
 
-    DD->emitDIE(Die);
+    DD.emitDIE(Die);
     Asm->OutStreamer.EmitLabel(TheU->getLabelEnd());
   }
 }
+
 // Compute the size and offset for each DIE.
 void DwarfFile::computeSizeAndOffsets() {
   // Offset from the first CU in the debug info section is 0 initially.
@@ -151,5 +153,38 @@ void DwarfFile::emitAbbrevs(const MCSection *Section) {
 void DwarfFile::emitStrings(const MCSection *StrSection,
                             const MCSection *OffsetSection) {
   StrPool.emit(*Asm, StrSection, OffsetSection);
+}
+
+void DwarfFile::addNonArgumentScopeVariable(LexicalScope *LS,
+                                            DbgVariable *Var) {
+  SmallVectorImpl<DbgVariable *> &Vars = DD.getScopeVariables()[LS];
+  DIVariable DV = Var->getVariable();
+  // Variables with positive arg numbers are parameters.
+  if (unsigned ArgNum = DV.getArgNumber()) {
+    // Keep all parameters in order at the start of the variable list to ensure
+    // function types are correct (no out-of-order parameters)
+    //
+    // This could be improved by only doing it for optimized builds (unoptimized
+    // builds have the right order to begin with), searching from the back (this
+    // would catch the unoptimized case quickly), or doing a binary search
+    // rather than linear search.
+    auto I = Vars.begin();
+    while (I != Vars.end()) {
+      unsigned CurNum = (*I)->getVariable().getArgNumber();
+      // A local (non-parameter) variable has been found, insert immediately
+      // before it.
+      if (CurNum == 0)
+        break;
+      // A later indexed parameter has been found, insert immediately before it.
+      if (CurNum > ArgNum)
+        break;
+      assert(CurNum != ArgNum);
+      ++I;
+    }
+    Vars.insert(I, Var);
+    return;
+  }
+
+  Vars.push_back(Var);
 }
 }

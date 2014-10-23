@@ -194,9 +194,6 @@ class DwarfDebug : public AsmPrinterHandler {
   typedef DenseMap<const MCSection *, SmallVector<SymbolCU, 8> > SectionMapType;
   SectionMapType SectionMap;
 
-  // List of arguments for current function.
-  SmallVector<DbgVariable *, 8> CurrentFnArguments;
-
   LexicalScopes LScopes;
 
   // Collection of abstract subprogram DIEs.
@@ -486,12 +483,9 @@ class DwarfDebug : public AsmPrinterHandler {
   /// ending of a scope.
   void identifyScopeMarkers();
 
-  /// \brief If Var is an current function argument that add it in
-  /// CurrentFnArguments list.
-  bool addCurrentFnArgument(DbgVariable *Var, LexicalScope *Scope);
-
   /// \brief Populate LexicalScope entries with variables' info.
-  void collectVariableInfo(SmallPtrSetImpl<const MDNode *> &ProcessedVars);
+  void collectVariableInfo(DwarfCompileUnit &TheCU, DISubprogram SP,
+                           SmallPtrSetImpl<const MDNode *> &ProcessedVars);
 
   /// \brief Build the location list for all DBG_VALUEs in the
   /// function that describe the same variable.
@@ -677,10 +671,6 @@ public:
 
   SmallPtrSet<const MDNode *, 16> &getProcessedSPNodes() {
     return ProcessedSPNodes;
-  }
-
-  SmallVector<DbgVariable *, 8> &getCurrentFnArguments() {
-    return CurrentFnArguments;
   }
 };
 } // End of namespace llvm

@@ -105,28 +105,23 @@ DIE *DwarfCompileUnit::getOrCreateGlobalVariableDIE(DIGlobalVariable GV) {
   DIScope GVContext = GV.getContext();
   DIType GTy = DD->resolve(GV.getType());
 
-  // If this is a static data member definition, some attributes belong
-  // to the declaration DIE.
-  DIE *VariableDIE = nullptr;
-  bool IsStaticMember = false;
-  DIDerivedType SDMDecl = GV.getStaticDataMemberDeclaration();
-  if (SDMDecl.Verify()) {
+  // Construct the context before querying for the existence of the DIE in
+  // case such construction creates the DIE.
+  DIE *ContextDIE = getOrCreateContextDIE(GVContext);
+
+  // Add to map.
+  DIE *VariableDIE = &createAndAddDIE(GV.getTag(), *ContextDIE, GV);
+  DIScope DeclContext;
+
+  if (DIDerivedType SDMDecl = GV.getStaticDataMemberDeclaration()) {
+    DeclContext = resolve(SDMDecl.getContext());
     assert(SDMDecl.isStaticMember() && "Expected static member decl");
+    assert(GV.isDefinition());
     // We need the declaration DIE that is in the static member's class.
-    VariableDIE = getOrCreateStaticMemberDIE(SDMDecl);
-    IsStaticMember = true;
-  }
-
-  // If this is not a static data member definition, create the variable
-  // DIE and add the initial set of attributes to it.
-  if (!VariableDIE) {
-    // Construct the context before querying for the existence of the DIE in
-    // case such construction creates the DIE.
-    DIE *ContextDIE = getOrCreateContextDIE(GVContext);
-
-    // Add to map.
-    VariableDIE = &createAndAddDIE(GV.getTag(), *ContextDIE, GV);
-
+    DIE *VariableSpecDIE = getOrCreateStaticMemberDIE(SDMDecl);
+    addDIEEntry(*VariableDIE, dwarf::DW_AT_specification, *VariableSpecDIE);
+  } else {
+    DeclContext = GV.getContext();
     // Add name and type.
     addString(*VariableDIE, dwarf::DW_AT_name, GV.getDisplayName());
     addType(*VariableDIE, GTy);
@@ -139,9 +134,11 @@ DIE *DwarfCompileUnit::getOrCreateGlobalVariableDIE(DIGlobalVariable GV) {
     addSourceLine(*VariableDIE, GV);
   }
 
+  if (!GV.isDefinition())
+    addFlag(*VariableDIE, dwarf::DW_AT_declaration);
+
   // Add location.
   bool addToAccelTable = false;
-  DIE *VariableSpecDIE = nullptr;
   bool isGlobalVariable = GV.getGlobal() != nullptr;
   if (isGlobalVariable) {
     addToAccelTable = true;
@@ -172,41 +169,21 @@ DIE *DwarfCompileUnit::getOrCreateGlobalVariableDIE(DIGlobalVariable GV) {
       DD->addArangeLabel(SymbolCU(this, Sym));
       addOpAddress(*Loc, Sym);
     }
-    // A static member's declaration is already flagged as such.
-    if (!SDMDecl.Verify() && !GV.isDefinition())
-      addFlag(*VariableDIE, dwarf::DW_AT_declaration);
-    // Do not create specification DIE if context is either compile unit
-    // or a subprogram.
-    if (GVContext && GV.isDefinition() && !GVContext.isCompileUnit() &&
-        !GVContext.isFile() && !DD->isSubprogramContext(GVContext)) {
-      // Create specification DIE.
-      VariableSpecDIE = &createAndAddDIE(dwarf::DW_TAG_variable, UnitDie);
-      addDIEEntry(*VariableSpecDIE, dwarf::DW_AT_specification, *VariableDIE);
-      addBlock(*VariableSpecDIE, dwarf::DW_AT_location, Loc);
-      // A static member's declaration is already flagged as such.
-      if (!SDMDecl.Verify())
-        addFlag(*VariableDIE, dwarf::DW_AT_declaration);
-    } else {
-      addBlock(*VariableDIE, dwarf::DW_AT_location, Loc);
-    }
+
+    addBlock(*VariableDIE, dwarf::DW_AT_location, Loc);
     // Add the linkage name.
     StringRef LinkageName = GV.getLinkageName();
     if (!LinkageName.empty())
       // From DWARF4: DIEs to which DW_AT_linkage_name may apply include:
       // TAG_common_block, TAG_constant, TAG_entry_point, TAG_subprogram and
       // TAG_variable.
-      addString(IsStaticMember && VariableSpecDIE ? *VariableSpecDIE
-                                                  : *VariableDIE,
+      addString(*VariableDIE,
                 DD->getDwarfVersion() >= 4 ? dwarf::DW_AT_linkage_name
                                            : dwarf::DW_AT_MIPS_linkage_name,
                 GlobalValue::getRealLinkageName(LinkageName));
   } else if (const ConstantInt *CI =
                  dyn_cast_or_null<ConstantInt>(GV.getConstant())) {
-    // AT_const_value was added when the static member was created. To avoid
-    // emitting AT_const_value multiple times, we only add AT_const_value when
-    // it is not a static member.
-    if (!IsStaticMember)
-      addConstantValue(*VariableDIE, CI, GTy);
+    addConstantValue(*VariableDIE, CI, GTy);
   } else if (const ConstantExpr *CE = getMergedGlobalExpr(GV.getConstant())) {
     addToAccelTable = true;
     // GV is a merged global.
@@ -223,19 +200,17 @@ DIE *DwarfCompileUnit::getOrCreateGlobalVariableDIE(DIGlobalVariable GV) {
     addBlock(*VariableDIE, dwarf::DW_AT_location, Loc);
   }
 
-  DIE *ResultDIE = VariableSpecDIE ? VariableSpecDIE : VariableDIE;
-
   if (addToAccelTable) {
-    DD->addAccelName(GV.getName(), *ResultDIE);
+    DD->addAccelName(GV.getName(), *VariableDIE);
 
     // If the linkage name is different than the name, go ahead and output
     // that as well into the name table.
     if (GV.getLinkageName() != "" && GV.getName() != GV.getLinkageName())
-      DD->addAccelName(GV.getLinkageName(), *ResultDIE);
+      DD->addAccelName(GV.getLinkageName(), *VariableDIE);
   }
 
-  addGlobalName(GV.getName(), *ResultDIE, GV.getContext());
-  return ResultDIE;
+  addGlobalName(GV.getName(), *VariableDIE, DeclContext);
+  return VariableDIE;
 }
 
 void DwarfCompileUnit::addRange(RangeSpan Range) {
@@ -581,31 +556,21 @@ void DwarfCompileUnit::constructSubprogramScopeDIE(LexicalScope *Scope) {
 
   DIE &ScopeDIE = updateSubprogramScopeDIE(Sub);
 
-  // Collect arguments for current function.
-  DIE *ObjectPointer = nullptr;
-  for (DbgVariable *ArgDV : DD->getCurrentFnArguments())
-    if (ArgDV)
-      ScopeDIE.addChild(constructVariableDIE(*ArgDV, *Scope, ObjectPointer));
-
   // If this is a variadic function, add an unspecified parameter.
   DITypeArray FnArgs = Sub.getType().getTypeArray();
+
+  // Collect lexical scope children first.
+  // ObjectPointer might be a local (non-argument) local variable if it's a
+  // block's synthetic this pointer.
+  if (DIE *ObjectPointer = createAndAddScopeChildren(Scope, ScopeDIE))
+    addDIEEntry(ScopeDIE, dwarf::DW_AT_object_pointer, *ObjectPointer);
+
   // If we have a single element of null, it is a function that returns void.
   // If we have more than one elements and the last one is null, it is a
   // variadic function.
   if (FnArgs.getNumElements() > 1 &&
       !FnArgs.getElement(FnArgs.getNumElements() - 1))
     ScopeDIE.addChild(make_unique<DIE>(dwarf::DW_TAG_unspecified_parameters));
-
-  // Collect lexical scope children first.
-  // ObjectPointer might be a local (non-argument) local variable if it's a
-  // block's synthetic this pointer.
-  if (DIE *BlockObjPtr = createAndAddScopeChildren(Scope, ScopeDIE)) {
-    assert(!ObjectPointer && "multiple object pointers can't be described");
-    ObjectPointer = BlockObjPtr;
-  }
-
-  if (ObjectPointer)
-    addDIEEntry(ScopeDIE, dwarf::DW_AT_object_pointer, *ObjectPointer);
 }
 
 DIE *DwarfCompileUnit::createAndAddScopeChildren(LexicalScope *Scope,
