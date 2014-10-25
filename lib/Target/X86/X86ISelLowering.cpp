@@ -14367,6 +14367,37 @@ SDValue X86TargetLowering::ConvertCmpIfNecessary(SDValue Cmp,
   return DAG.getNode(X86ISD::SAHF, dl, MVT::i32, TruncSrl);
 }
 
+/// The minimum architected relative accuracy is 2^-12. We need one
+/// Newton-Raphson step to have a good float result (24 bits of precision).
+SDValue X86TargetLowering::getRsqrtEstimate(SDValue Op,
+                                            DAGCombinerInfo &DCI,
+                                            unsigned &RefinementSteps,
+                                            bool &UseOneConstNR) const {
+  // FIXME: We should use instruction latency models to calculate the cost of
+  // each potential sequence, but this is very hard to do reliably because
+  // at least Intel's Core* chips have variable timing based on the number of
+  // significant digits in the divisor and/or sqrt operand.
+  if (!Subtarget->useSqrtEst())
+    return SDValue();
+
+  EVT VT = Op.getValueType();
+  
+  // SSE1 has rsqrtss and rsqrtps.
+  // TODO: Add support for AVX512 (v16f32).
+  // It is likely not profitable to do this for f64 because a double-precision
+  // rsqrt estimate with refinement on x86 prior to FMA requires at least 16
+  // instructions: convert to single, rsqrtss, convert back to double, refine
+  // (3 steps = at least 13 insts). If an 'rsqrtsd' variant was added to the ISA
+  // along with FMA, this could be a throughput win.
+  if ((Subtarget->hasSSE1() && (VT == MVT::f32 || VT == MVT::v4f32)) ||
+      (Subtarget->hasAVX() && VT == MVT::v8f32)) {
+    RefinementSteps = 1;
+    UseOneConstNR = false;
+    return DCI.DAG.getNode(X86ISD::FRSQRT, SDLoc(Op), VT, Op);
+  }
+  return SDValue();
+}
+
 static bool isAllOnes(SDValue V) {
   ConstantSDNode *C = dyn_cast<ConstantSDNode>(V);
   return C && C->isAllOnesValue();
@@ -21745,7 +21776,7 @@ static SDValue PerformTruncateCombine(SDNode *N, SelectionDAG &DAG,
 /// XFormVExtractWithShuffleIntoLoad - Check if a vector extract from a target
 /// specific shuffle of a load can be folded into a single element load.
 /// Similar handling for VECTOR_SHUFFLE is performed by DAGCombiner, but
-/// shuffles have been customed lowered so we need to handle those here.
+/// shuffles have been custom lowered so we need to handle those here.
 static SDValue XFormVExtractWithShuffleIntoLoad(SDNode *N, SelectionDAG &DAG,
                                          TargetLowering::DAGCombinerInfo &DCI) {
   if (DCI.isBeforeLegalizeOps())
@@ -21757,17 +21788,19 @@ static SDValue XFormVExtractWithShuffleIntoLoad(SDNode *N, SelectionDAG &DAG,
   if (!isa<ConstantSDNode>(EltNo))
     return SDValue();
 
-  EVT VT = InVec.getValueType();
+  EVT OriginalVT = InVec.getValueType();
 
   if (InVec.getOpcode() == ISD::BITCAST) {
     // Don't duplicate a load with other uses.
     if (!InVec.hasOneUse())
       return SDValue();
     EVT BCVT = InVec.getOperand(0).getValueType();
-    if (BCVT.getVectorNumElements() != VT.getVectorNumElements())
+    if (BCVT.getVectorNumElements() != OriginalVT.getVectorNumElements())
       return SDValue();
     InVec = InVec.getOperand(0);
   }
+
+  EVT CurrentVT = InVec.getValueType();
 
   if (!isTargetShuffle(InVec.getOpcode()))
     return SDValue();
@@ -21778,12 +21811,12 @@ static SDValue XFormVExtractWithShuffleIntoLoad(SDNode *N, SelectionDAG &DAG,
 
   SmallVector<int, 16> ShuffleMask;
   bool UnaryShuffle;
-  if (!getTargetShuffleMask(InVec.getNode(), VT.getSimpleVT(), ShuffleMask,
-                            UnaryShuffle))
+  if (!getTargetShuffleMask(InVec.getNode(), CurrentVT.getSimpleVT(),
+                            ShuffleMask, UnaryShuffle))
     return SDValue();
 
   // Select the input vector, guarding against out of range extract vector.
-  unsigned NumElems = VT.getVectorNumElements();
+  unsigned NumElems = CurrentVT.getVectorNumElements();
   int Elt = cast<ConstantSDNode>(EltNo)->getZExtValue();
   int Idx = (Elt > (int)NumElems) ? -1 : ShuffleMask[Elt];
   SDValue LdNode = (Idx < (int)NumElems) ? InVec.getOperand(0)
@@ -21825,11 +21858,12 @@ static SDValue XFormVExtractWithShuffleIntoLoad(SDNode *N, SelectionDAG &DAG,
   SDLoc dl(N);
 
   // Create shuffle node taking into account the case that its a unary shuffle
-  SDValue Shuffle = (UnaryShuffle) ? DAG.getUNDEF(VT) : InVec.getOperand(1);
-  Shuffle = DAG.getVectorShuffle(InVec.getValueType(), dl,
+  SDValue Shuffle = (UnaryShuffle) ? DAG.getUNDEF(CurrentVT)
+                                   : InVec.getOperand(1);
+  Shuffle = DAG.getVectorShuffle(CurrentVT, dl,
                                  InVec.getOperand(0), Shuffle,
                                  &ShuffleMask[0]);
-  Shuffle = DAG.getNode(ISD::BITCAST, dl, VT, Shuffle);
+  Shuffle = DAG.getNode(ISD::BITCAST, dl, OriginalVT, Shuffle);
   return DAG.getNode(ISD::EXTRACT_VECTOR_ELT, dl, N->getValueType(0), Shuffle,
                      EltNo);
 }

@@ -164,12 +164,6 @@ class DwarfDebug : public AsmPrinterHandler {
   // All DIEValues are allocated through this allocator.
   BumpPtrAllocator DIEValueAllocator;
 
-  // Handle to the compile unit used for the inline extension handling,
-  // this is just so that the DIEValue allocator has a place to store
-  // the particular elements.
-  // FIXME: Store these off of DwarfDebug instead?
-  DwarfCompileUnit *FirstCU;
-
   // Maps MDNode with its corresponding DwarfCompileUnit.
   MapVector<const MDNode *, DwarfCompileUnit *> CUMap;
 
@@ -198,11 +192,6 @@ class DwarfDebug : public AsmPrinterHandler {
 
   // Collection of abstract subprogram DIEs.
   DenseMap<const MDNode *, DIE *> AbstractSPDies;
-
-  // Collection of dbg variables of a scope.
-  typedef DenseMap<LexicalScope *, SmallVector<DbgVariable *, 8> >
-  ScopeVariablesMap;
-  ScopeVariablesMap ScopeVariables;
 
   // Collection of abstract variables.
   DenseMap<const MDNode *, std::unique_ptr<DbgVariable>> AbstractVariables;
@@ -664,8 +653,6 @@ public:
   DenseMap<const MDNode *, DIE *> &getAbstractSPDies() {
     return AbstractSPDies;
   }
-
-  ScopeVariablesMap &getScopeVariables() { return ScopeVariables; }
 
   SmallPtrSet<const MDNode *, 16> &getProcessedSPNodes() {
     return ProcessedSPNodes;

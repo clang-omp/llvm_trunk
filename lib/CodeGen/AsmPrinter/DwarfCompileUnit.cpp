@@ -530,7 +530,7 @@ DIE *DwarfCompileUnit::createScopeChildrenDIE(
     unsigned *ChildScopeCount) {
   DIE *ObjectPointer = nullptr;
 
-  for (DbgVariable *DV : DD->getScopeVariables().lookup(Scope))
+  for (DbgVariable *DV : DU->getScopeVariables().lookup(Scope))
     Children.push_back(constructVariableDIE(*DV, *Scope, ObjectPointer));
 
   unsigned ChildCountWithoutScopes = Children.size();
@@ -613,6 +613,34 @@ DwarfCompileUnit::constructAbstractSubprogramScopeDIE(LexicalScope *Scope) {
   if (DIE *ObjectPointer = createAndAddScopeChildren(Scope, AbsDef))
     addDIEEntry(AbsDef, dwarf::DW_AT_object_pointer, *ObjectPointer);
   return AbsDef;
+}
+
+std::unique_ptr<DIE>
+DwarfCompileUnit::constructImportedEntityDIE(const DIImportedEntity &Module) {
+  assert(Module.Verify() &&
+         "Use one of the MDNode * overloads to handle invalid metadata");
+  std::unique_ptr<DIE> IMDie = make_unique<DIE>((dwarf::Tag)Module.getTag());
+  insertDIE(Module, IMDie.get());
+  DIE *EntityDie;
+  DIDescriptor Entity = resolve(Module.getEntity());
+  if (Entity.isNameSpace())
+    EntityDie = getOrCreateNameSpace(DINameSpace(Entity));
+  else if (Entity.isSubprogram())
+    EntityDie = getOrCreateSubprogramDIE(DISubprogram(Entity));
+  else if (Entity.isType())
+    EntityDie = getOrCreateTypeDIE(DIType(Entity));
+  else
+    EntityDie = getDIE(Entity);
+  assert(EntityDie);
+  addSourceLine(*IMDie, Module.getLineNumber(),
+                Module.getContext().getFilename(),
+                Module.getContext().getDirectory());
+  addDIEEntry(*IMDie, dwarf::DW_AT_import, *EntityDie);
+  StringRef Name = Module.getName();
+  if (!Name.empty())
+    addString(*IMDie, dwarf::DW_AT_name, Name);
+
+  return IMDie;
 }
 
 void DwarfCompileUnit::finishSubprogramDefinition(DISubprogram SP) {
