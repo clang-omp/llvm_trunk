@@ -32,7 +32,9 @@ void llvm_initialize(void) {
 
 /* unit -> bool */
 CAMLprim value llvm_initialize_native_target(value Unit) {
-  return Val_bool(LLVMInitializeNativeTarget());
+  return Val_bool(!LLVMInitializeNativeTarget() &&
+                  !LLVMInitializeNativeAsmParser() &&
+                  !LLVMInitializeNativeAsmPrinter());
 }
 
 /* Can't use the recommended caml_named_value mechanism for backwards
@@ -48,10 +50,10 @@ CAMLprim value llvm_register_ee_exns(value Error) {
 static void llvm_raise(value Prototype, char *Message) {
   CAMLparam1(Prototype);
   CAMLlocal1(CamlMessage);
-  
+
   CamlMessage = copy_string(Message);
   LLVMDisposeMessage(Message);
-  
+
   raise_with_arg(Prototype, CamlMessage);
   abort(); /* NOTREACHED */
 #ifdef CAMLnoreturn
@@ -200,6 +202,24 @@ llvm_ee_create_jit(LLVMModuleRef M, value OptLevel) {
   return JIT;
 }
 
+/* llmodule -> llcompileroption -> ExecutionEngine.t */
+CAMLprim LLVMExecutionEngineRef
+llvm_ee_create_mcjit(LLVMModuleRef M, value OptRecord) {
+  LLVMExecutionEngineRef MCJIT;
+  char *Error;
+  struct LLVMMCJITCompilerOptions Options = {
+         .OptLevel = Int_val(Field(OptRecord, 0)),
+         .CodeModel = Int_val(Field(OptRecord, 1)),
+         .NoFramePointerElim = Int_val(Field(OptRecord, 2)),
+         .EnableFastISel = Int_val(Field(OptRecord, 3)),
+         .MCJMM = NULL
+  };
+  if (LLVMCreateMCJITCompilerForModule(&MCJIT, M, &Options,
+                                      sizeof(Options), &Error))
+    llvm_raise(llvm_ee_error_exn, Error);
+  return MCJIT;
+}
+
 /* ExecutionEngine.t -> unit */
 CAMLprim value llvm_ee_dispose(LLVMExecutionEngineRef EE) {
   LLVMDisposeExecutionEngine(EE);
@@ -240,14 +260,14 @@ CAMLprim value llvm_ee_run_function(LLVMValueRef F, value Args,
   unsigned NumArgs;
   LLVMGenericValueRef Result, *GVArgs;
   unsigned I;
-  
+
   NumArgs = Wosize_val(Args);
   GVArgs = (LLVMGenericValueRef*) malloc(NumArgs * sizeof(LLVMGenericValueRef));
   for (I = 0; I != NumArgs; ++I)
     GVArgs[I] = Genericvalue_val(Field(Args, I));
-  
+
   Result = LLVMRunFunction(EE, F, NumArgs, GVArgs);
-  
+
   free(GVArgs);
   return alloc_generic_value(Result);
 }
@@ -273,21 +293,21 @@ CAMLprim value llvm_ee_run_function_as_main(LLVMValueRef F,
   int I, NumArgs, NumEnv, EnvSize, Result;
   const char **CArgs, **CEnv;
   char *CEnvBuf, *Pos;
-  
+
   NumArgs = Wosize_val(Args);
   NumEnv = Wosize_val(Env);
-  
+
   /* Build the environment. */
   CArgs = (const char **) malloc(NumArgs * sizeof(char*));
   for (I = 0; I != NumArgs; ++I)
     CArgs[I] = String_val(Field(Args, I));
-  
+
   /* Compute the size of the environment string buffer. */
   for (I = 0, EnvSize = 0; I != NumEnv; ++I) {
     EnvSize += strlen(String_val(Field(Field(Env, I), 0))) + 1;
     EnvSize += strlen(String_val(Field(Field(Env, I), 1))) + 1;
   }
-  
+
   /* Build the environment. */
   CEnv = (const char **) malloc((NumEnv + 1) * sizeof(char*));
   CEnvBuf = (char*) malloc(EnvSize);
@@ -297,7 +317,7 @@ CAMLprim value llvm_ee_run_function_as_main(LLVMValueRef F,
          *Value = String_val(Field(Field(Env, I), 1));
     int NameLen  = strlen(Name),
         ValueLen = strlen(Value);
-    
+
     CEnv[I] = Pos;
     memcpy(Pos, Name, NameLen);
     Pos += NameLen;
@@ -307,13 +327,13 @@ CAMLprim value llvm_ee_run_function_as_main(LLVMValueRef F,
     *Pos++ = '\0';
   }
   CEnv[NumEnv] = NULL;
-  
+
   Result = LLVMRunFunctionAsMain(EE, F, NumArgs, CArgs, CEnv);
-  
+
   free(CArgs);
   free(CEnv);
   free(CEnvBuf);
-  
+
   CAMLreturn(Val_int(Result));
 }
 
