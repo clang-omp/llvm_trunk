@@ -157,16 +157,16 @@ end
     See the [llvm::ICmpInst::Predicate] enumeration. *)
 module Icmp : sig
   type t =
-  | Eq  (* Equal *)
-  | Ne  (* Not equal *)
-  | Ugt (* Unsigned greater than *)
-  | Uge (* Unsigned greater or equal *)
-  | Ult (* Unsigned less than *)
-  | Ule (* Unsigned less or equal *)
-  | Sgt (* Signed greater than *)
-  | Sge (* Signed greater or equal *)
-  | Slt (* Signed less than *)
-  | Sle (* Signed less or equal *)
+  | Eq  (** Equal *)
+  | Ne  (** Not equal *)
+  | Ugt (** Unsigned greater than *)
+  | Uge (** Unsigned greater or equal *)
+  | Ult (** Unsigned less than *)
+  | Ule (** Unsigned less or equal *)
+  | Sgt (** Signed greater than *)
+  | Sge (** Signed greater or equal *)
+  | Slt (** Signed less than *)
+  | Sle (** Signed less or equal *)
 end
 
 (** The predicate for a floating-point comparison ([fcmp]) instruction.
@@ -175,38 +175,38 @@ end
     See the [llvm::FCmpInst::Predicate] enumeration. *)
 module Fcmp : sig
   type t =
-  | False (* Always false *)
-  | Oeq   (* Ordered and equal *)
-  | Ogt   (* Ordered and greater than *)
-  | Oge   (* Ordered and greater or equal *)
-  | Olt   (* Ordered and less than *)
-  | Ole   (* Ordered and less or equal *)
-  | One   (* Ordered and not equal *)
-  | Ord   (* Ordered (no operand is NaN) *)
-  | Uno   (* Unordered (one operand at least is NaN) *)
-  | Ueq   (* Unordered and equal *)
-  | Ugt   (* Unordered and greater than *)
-  | Uge   (* Unordered and greater or equal *)
-  | Ult   (* Unordered and less than *)
-  | Ule   (* Unordered and less or equal *)
-  | Une   (* Unordered and not equal *)
-  | True  (* Always true *)
+  | False (** Always false *)
+  | Oeq   (** Ordered and equal *)
+  | Ogt   (** Ordered and greater than *)
+  | Oge   (** Ordered and greater or equal *)
+  | Olt   (** Ordered and less than *)
+  | Ole   (** Ordered and less or equal *)
+  | One   (** Ordered and not equal *)
+  | Ord   (** Ordered (no operand is NaN) *)
+  | Uno   (** Unordered (one operand at least is NaN) *)
+  | Ueq   (** Unordered and equal *)
+  | Ugt   (** Unordered and greater than *)
+  | Uge   (** Unordered and greater or equal *)
+  | Ult   (** Unordered and less than *)
+  | Ule   (** Unordered and less or equal *)
+  | Une   (** Unordered and not equal *)
+  | True  (** Always true *)
 end
 
 (** The opcodes for LLVM instructions and constant expressions. *)
 module Opcode : sig
   type t =
-  | Invalid (* not an instruction *)
-  (* Terminator Instructions *)
-  | Ret
+  | Invalid (** Not an instruction *)
+
+  | Ret (** Terminator Instructions *)
   | Br
   | Switch
   | IndirectBr
   | Invoke
   | Invalid2
   | Unreachable
-  (* Standard Binary Operators *)
-  | Add
+
+  | Add (** Standard Binary Operators *)
   | FAdd
   | Sub
   | FSub
@@ -218,20 +218,20 @@ module Opcode : sig
   | URem
   | SRem
   | FRem
-  (* Logical Operators *)
-  | Shl
+
+  | Shl (** Logical Operators *)
   | LShr
   | AShr
   | And
   | Or
   | Xor
-  (* Memory Operators *)
-  | Alloca
+
+  | Alloca (** Memory Operators *)
   | Load
   | Store
   | GetElementPtr
-  (* Cast Operators *)
-  | Trunc
+
+  | Trunc (** Cast Operators *)
   | ZExt
   | SExt
   | FPToUI
@@ -243,8 +243,8 @@ module Opcode : sig
   | PtrToInt
   | IntToPtr
   | BitCast
-  (* Other Operators *)
-  | ICmp
+
+  | ICmp (** Other Operators *)
   | FCmp
   | PHI
   | Call
@@ -291,7 +291,7 @@ module AtomicOrdering : sig
   | NotAtomic
   | Unordered
   | Monotonic
-  | Invalid (* removed due to API changes *)
+  | Invalid (** removed due to API changes *)
   | Acquire
   | Release
   | AcqiureRelease
@@ -651,7 +651,7 @@ val x86_mmx_type : llcontext -> lltype
 val type_by_name : llmodule -> string -> lltype option
 
 
-(* {6 Values} *)
+(** {6 Values} *)
 
 (** [type_of v] returns the type of the value [v].
     See the method [llvm::Value::getType]. *)
@@ -682,7 +682,7 @@ val string_of_llvalue : llvalue -> string
 val replace_all_uses_with : llvalue -> llvalue -> unit
 
 
-(* {6 Uses} *)
+(** {6 Uses} *)
 
 (** [use_begin v] returns the first position in the use list for the value [v].
     [use_begin] and [use_succ] can e used to iterate over the use list in order.
@@ -714,7 +714,7 @@ val fold_left_uses : ('a -> lluse -> 'a) -> 'a -> llvalue -> 'a
 val fold_right_uses : (lluse -> 'a -> 'a) -> llvalue -> 'a -> 'a
 
 
-(* {6 Users} *)
+(** {6 Users} *)
 
 (** [operand v i] returns the operand at index [i] for the value [v]. See the
     method [llvm::User::getOperand]. *)
@@ -849,7 +849,7 @@ val const_float_of_string : lltype -> string -> llvalue
 (** {7 Operations on composite constants} *)
 
 (** [const_string c s] returns the constant [i8] array with the values of the
-    characters in the string [s] in the context [c]. The array is not 
+    characters in the string [s] in the context [c]. The array is not
     null-terminated (but see {!const_stringz}). This value can in turn be used
     as the initializer for a global variable. See the method
     [llvm::ConstantArray::get]. *)
@@ -2419,7 +2419,7 @@ module MemoryBuffer : sig
       path [p]. If the file could not be read, then [IoError msg] is
       raised. *)
   val of_file : string -> llmemorybuffer
-  
+
   (** [of_stdin ()] is the memory buffer containing the contents of standard input.
       If standard input is empty, then [IoError msg] is raised. *)
   val of_stdin : unit -> llmemorybuffer
@@ -2430,7 +2430,7 @@ module MemoryBuffer : sig
 
   (** [as_string mb] is the string containing the contents of memory buffer [mb]. *)
   val as_string : llmemorybuffer -> string
-  
+
   (** Disposes of a memory buffer. *)
   val dispose : llmemorybuffer -> unit
 end
@@ -2442,13 +2442,13 @@ module PassManager : sig
   (**  *)
   type 'a t
   type any = [ `Module | `Function ]
-  
+
   (** [PassManager.create ()] constructs a new whole-module pass pipeline. This
       type of pipeline is suitable for link-time optimization and whole-module
       transformations.
       See the constructor of [llvm::PassManager]. *)
   val create : unit -> [ `Module ] t
-  
+
   (** [PassManager.create_function m] constructs a new function-by-function
       pass pipeline over the module [m]. It does not take ownership of [m].
       This type of pipeline is suitable for code generation and JIT compilation
@@ -2467,19 +2467,19 @@ module PassManager : sig
       the module, [false] otherwise.
       See the [llvm::FunctionPassManager::doInitialization] method. *)
   val initialize : [ `Function ] t -> bool
-  
+
   (** [run_function f fpm] executes all of the function passes scheduled in the
       function pass manager [fpm] over the function [f]. Returns [true] if any
       of the passes modified [f], [false] otherwise.
       See the [llvm::FunctionPassManager::run] method. *)
   val run_function : llvalue -> [ `Function ] t -> bool
-  
+
   (** [finalize fpm] finalizes all of the function passes scheduled in in the
       function pass manager [fpm]. Returns [true] if any of the passes
       modified the module, [false] otherwise.
       See the [llvm::FunctionPassManager::doFinalization] method. *)
   val finalize : [ `Function ] t -> bool
-  
+
   (** Frees the memory of a pass pipeline. For function pipelines, does not free
       the module.
       See the destructor of [llvm::BasePassManager]. *)

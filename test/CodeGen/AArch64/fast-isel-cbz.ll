@@ -2,8 +2,7 @@
 
 define i32 @icmp_eq_i1(i1 %a) {
 ; CHECK-LABEL: icmp_eq_i1
-; CHECK:       and [[REG:w[0-9]+]], w0, #0x1
-; CHECK:       cbz [[REG]], {{LBB.+_2}}
+; CHECK:       tbz w0, #0, {{LBB.+_2}}
   %1 = icmp eq i1 %a, 0
   br i1 %1, label %bb1, label %bb2
 bb2:
@@ -51,6 +50,17 @@ define i32 @icmp_eq_i64(i64 %a) {
 ; CHECK-LABEL: icmp_eq_i64
 ; CHECK:       cbz x0, {{LBB.+_2}}
   %1 = icmp eq i64 %a, 0
+  br i1 %1, label %bb1, label %bb2
+bb2:
+  ret i32 1
+bb1:
+  ret i32 0
+}
+
+define i32 @icmp_eq_ptr(i8* %a) {
+; CHECK-LABEL: icmp_eq_ptr
+; CHECK:       cbz x0, {{LBB.+_2}}
+  %1 = icmp eq i8* %a, null
   br i1 %1, label %bb1, label %bb2
 bb2:
   ret i32 1
