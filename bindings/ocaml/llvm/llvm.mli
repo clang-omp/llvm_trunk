@@ -381,6 +381,14 @@ val install_fatal_error_handler : (string -> unit) -> unit
 (** [reset_fatal_error_handler ()] resets LLVM's fatal error handler. *)
 val reset_fatal_error_handler : unit -> unit
 
+(** [parse_command_line_options ?overview args] parses [args] using
+    the LLVM command line parser. Note that the only stable thing about this
+    function is its signature; you cannot rely on any particular set of command
+    line arguments being interpreted the same way across LLVM versions.
+
+    See the function [llvm::cl::ParseCommandLineOptions()]. *)
+val parse_command_line_options : ?overview:string -> string array -> unit
+
 (** {6 Contexts} *)
 
 (** [create_context ()] creates a context for storing the "global" state in
@@ -841,6 +849,11 @@ val const_int_of_string : lltype -> string -> int -> llvalue
 (** [const_float ty n] returns the floating point constant of type [ty] and
     value [n]. See the method [llvm::ConstantFP::get]. *)
 val const_float : lltype -> float -> llvalue
+
+(** [float_of_const c] returns the float value of the [c] constant float.
+    None is returned if this is not an float constant.
+    See the method [llvm::ConstantFP::getDoubleValue].*)
+val float_of_const : llvalue -> float option
 
 (** [const_float_of_string ty s] returns the floating point constant of type
     [ty] and value [n]. See the method [llvm::ConstantFP::get]. *)
@@ -1699,6 +1712,10 @@ val instr_opcode : llvalue -> Opcode.t
     instruction [i]. *)
 val icmp_predicate : llvalue -> Icmp.t option
 
+(** [fcmp_predicate i] returns the [fcmp.t] corresponding to an [fcmp]
+    instruction [i]. *)
+val fcmp_predicate : llvalue -> Fcmp.t option
+
 (** [inst_clone i] returns a copy of instruction [i],
     The instruction has no parent, and no name.
     See the method [llvm::Instruction::clone]. *)
@@ -1758,6 +1775,52 @@ val is_volatile : llvalue -> bool
     [llvm::StoreInst::setVolatile]. *)
 val set_volatile : bool -> llvalue -> unit
 
+(** {7 Operations on terminators} *)
+
+(** [is_terminator v] returns true if the instruction [v] is a terminator. *)
+val is_terminator : llvalue -> bool
+
+(** [successor v i] returns the successor at index [i] for the value [v].
+    See the method [llvm::TerminatorInst::getSuccessor]. *)
+val successor : llvalue -> int -> llbasicblock
+
+(** [set_successor v i o] sets the successor of the value [v] at the index [i] to
+    the value [o].
+    See the method [llvm::TerminatorInst::setSuccessor]. *)
+val set_successor : llvalue -> int -> llbasicblock -> unit
+
+(** [num_successors v] returns the number of successors for the value [v].
+    See the method [llvm::TerminatorInst::getNumSuccessors]. *)
+val num_successors : llvalue -> int
+
+(** [successors v] returns the successors of [v]. *)
+val successors : llvalue -> llbasicblock array
+
+(** [iter_successors f v] applies function f to each successor [v] in order. Tail recursive. *)
+val iter_successors : (llbasicblock -> unit) -> llvalue -> unit
+
+(** [fold_successors f v init] is [f (... (f init vN) ...) v1] where [v1,...,vN] are the successors of [v]. Tail recursive. *)
+val fold_successors : (llbasicblock -> 'a -> 'a) -> llvalue -> 'a -> 'a
+
+(** {7 Operations on branches} *)
+
+(** [is_conditional v] returns true if the branch instruction [v] is conditional.
+    See the method [llvm::BranchInst::isConditional]. *)
+val is_conditional : llvalue -> bool
+
+(** [condition v] return the condition of the branch instruction [v].
+    See the method [llvm::BranchInst::getCondition]. *)
+val condition : llvalue -> llvalue
+
+(** [set_condition v c] sets the condition of the branch instruction [v] to the value [c].
+    See the method [llvm::BranchInst::setCondition]. *)
+val set_condition : llvalue -> llvalue -> unit
+
+(** [get_branch c] returns a description of the branch instruction [c]. *)
+val get_branch : llvalue ->
+  [ `Conditional of llvalue * llbasicblock * llbasicblock
+  | `Unconditional of llbasicblock ]
+    option
 
 (** {7 Operations on phi nodes} *)
 
