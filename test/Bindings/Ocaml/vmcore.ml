@@ -1,7 +1,5 @@
-(* RUN: rm -rf %t.builddir
- * RUN: mkdir -p %t.builddir
- * RUN: cp %s %t.builddir
- * RUN: %ocamlcomp -warn-error A llvm.%cma llvm_analysis.%cma llvm_bitwriter.%cma %t.builddir/vmcore.ml -o %t
+(* RUN: cp %s %T/vmcore.ml
+ * RUN: %ocamlcomp -g -warn-error A -package llvm.analysis -package llvm.bitwriter -linkpkg %T/vmcore.ml -o %t
  * RUN: %t %t.bc
  * RUN: llvm-dis < %t.bc > %t.ll
  * RUN: FileCheck %s < %t.ll
@@ -444,7 +442,14 @@ let test_global_values () =
   group "alignment";
   let g = define_global "GVal05" zero32 m ++
           set_alignment 128 in
-  insist (128 = alignment g)
+  insist (128 = alignment g);
+
+  (* CHECK: GVal06{{.*}}dllexport
+   *)
+  group "dll_storage_class";
+  let g = define_global "GVal06" zero32 m ++
+          set_dll_storage_class DLLStorageClass.DLLExport in
+  insist (DLLStorageClass.DLLExport = dll_storage_class g)
 
 
 (*===-- Global Variables --------------------------------------------------===*)

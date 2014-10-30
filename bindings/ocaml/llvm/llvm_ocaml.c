@@ -25,14 +25,16 @@
 #include "caml/fail.h"
 #include "caml/callback.h"
 
-static void llvm_raise(value Prototype, char *Message) {
-  CAMLparam1(Prototype);
-  CAMLlocal1(CamlMessage);
-
-  CamlMessage = copy_string(Message);
+value llvm_string_of_message(char* Message) {
+  value String = caml_copy_string(Message);
   LLVMDisposeMessage(Message);
 
-  raise_with_arg(Prototype, CamlMessage);
+  return String;
+}
+
+void llvm_raise(value Prototype, char *Message) {
+  CAMLparam1(Prototype);
+  raise_with_arg(Prototype, llvm_string_of_message(Message));
   CAMLnoreturn;
 }
 
@@ -952,6 +954,17 @@ CAMLprim value llvm_visibility(LLVMValueRef Global) {
 /* Visibility.t -> llvalue -> unit */
 CAMLprim value llvm_set_visibility(value Viz, LLVMValueRef Global) {
   LLVMSetVisibility(Global, Int_val(Viz));
+  return Val_unit;
+}
+
+/* llvalue -> DLLStorageClass.t */
+CAMLprim value llvm_dll_storage_class(LLVMValueRef Global) {
+  return Val_int(LLVMGetDLLStorageClass(Global));
+}
+
+/* DLLStorageClass.t -> llvalue -> unit */
+CAMLprim value llvm_set_dll_storage_class(value Viz, LLVMValueRef Global) {
+  LLVMSetDLLStorageClass(Global, Int_val(Viz));
   return Val_unit;
 }
 

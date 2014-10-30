@@ -66,6 +66,13 @@ module Visibility = struct
   | Protected
 end
 
+module DLLStorageClass = struct
+  type t =
+  | Default
+  | DLLImport
+  | DLLExport
+end
+
 module CallConv = struct
   let c = 0
   let fast = 8
@@ -306,6 +313,7 @@ external mdkind_id : llcontext -> string -> llmdkind = "llvm_mdkind_id"
 (*===-- Modules -----------------------------------------------------------===*)
 external create_module : llcontext -> string -> llmodule = "llvm_create_module"
 external dispose_module : llmodule -> unit = "llvm_dispose_module"
+external clone_module : llmodule -> llmodule = "LLVMCloneModule"
 external target_triple: llmodule -> string
                       = "llvm_target_triple"
 external set_target_triple: string -> llmodule -> unit
@@ -575,6 +583,8 @@ external section : llvalue -> string = "llvm_section"
 external set_section : string -> llvalue -> unit = "llvm_set_section"
 external visibility : llvalue -> Visibility.t = "llvm_visibility"
 external set_visibility : Visibility.t -> llvalue -> unit = "llvm_set_visibility"
+external dll_storage_class : llvalue -> DLLStorageClass.t = "llvm_dll_storage_class"
+external set_dll_storage_class : DLLStorageClass.t -> llvalue -> unit = "llvm_set_dll_storage_class"
 external alignment : llvalue -> int = "llvm_alignment"
 external set_alignment : int -> llvalue -> unit = "llvm_set_alignment"
 external is_global_constant : llvalue -> bool = "llvm_is_global_constant"
