@@ -55,17 +55,9 @@ void DwarfFile::emitUnits(const MCSymbol *ASectionSym) {
     const MCSection *USection = TheU->getSection();
     Asm->OutStreamer.SwitchSection(USection);
 
-    // Emit the compile units header.
-    Asm->OutStreamer.EmitLabel(TheU->getLabelBegin());
-
-    // Emit size of content not including length itself
-    Asm->OutStreamer.AddComment("Length of Unit");
-    Asm->EmitInt32(TheU->getHeaderSize() + Die.getSize());
-
     TheU->emitHeader(ASectionSym);
 
     DD.emitDIE(Die);
-    Asm->OutStreamer.EmitLabel(TheU->getLabelEnd());
   }
 }
 
@@ -177,7 +169,12 @@ void DwarfFile::addScopeVariable(LexicalScope *LS, DbgVariable *Var) {
       // A later indexed parameter has been found, insert immediately before it.
       if (CurNum > ArgNum)
         break;
-      assert(CurNum != ArgNum);
+      // FIXME: There are still some cases where two inlined functions are
+      // conflated together (two calls to the same function at the same
+      // location (eg: via a macro, or without column info, etc)) and then
+      // their arguments are conflated as well.
+      assert((LS->getParent() || CurNum != ArgNum) &&
+             "Duplicate argument for top level (non-inlined) function");
       ++I;
     }
     Vars.insert(I, Var);

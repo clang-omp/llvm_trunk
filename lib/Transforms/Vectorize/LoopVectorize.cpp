@@ -531,7 +531,7 @@ static std::string getDebugLocString(const Loop *L) {
 
 /// \brief Propagate known metadata from one instruction to another.
 static void propagateMetadata(Instruction *To, const Instruction *From) {
-  SmallVector<std::pair<unsigned, MDNode *>, 4> Metadata;
+  SmallVector<std::pair<unsigned, Value *>, 4> Metadata;
   From->getAllMetadataOtherThanDebugLoc(Metadata);
 
   for (auto M : Metadata) {
@@ -3428,7 +3428,7 @@ void InnerLoopVectorizer::updateAnalysis() {
   DT->addNewBlock(LoopMiddleBlock, LoopBypassBlocks[1]);
   DT->addNewBlock(LoopScalarPreHeader, LoopBypassBlocks[0]);
   DT->changeImmediateDominator(LoopScalarBody, LoopScalarPreHeader);
-  DT->changeImmediateDominator(LoopExitBlock, LoopMiddleBlock);
+  DT->changeImmediateDominator(LoopExitBlock, LoopBypassBlocks[0]);
 
   DEBUG(DT->verifyDomTree());
 }

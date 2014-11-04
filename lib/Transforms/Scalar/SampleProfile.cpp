@@ -737,8 +737,14 @@ INITIALIZE_PASS_END(SampleProfileLoader, "sample-profile",
                     "Sample Profile loader", false, false)
 
 bool SampleProfileLoader::doInitialization(Module &M) {
-  Reader.reset(new SampleProfileReader(M, Filename));
-  ProfileIsValid = Reader->load();
+  auto ReaderOrErr = SampleProfileReader::create(Filename, M.getContext());
+  if (std::error_code EC = ReaderOrErr.getError()) {
+    std::string Msg = "Could not open profile: " + EC.message();
+    M.getContext().diagnose(DiagnosticInfoSampleProfile(Filename.data(), Msg));
+    return false;
+  }
+  Reader = std::move(ReaderOrErr.get());
+  ProfileIsValid = (Reader->read() == sampleprof_error::success);
   return true;
 }
 
