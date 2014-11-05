@@ -1017,7 +1017,11 @@ static const uint16_t DPRDecoderTable[] = {
 
 static DecodeStatus DecodeDPRRegisterClass(MCInst &Inst, unsigned RegNo,
                                    uint64_t Address, const void *Decoder) {
-  if (RegNo > 31)
+  uint64_t featureBits = ((const MCDisassembler*)Decoder)->getSubtargetInfo()
+                                                          .getFeatureBits();
+  bool hasD16 = featureBits & ARM::FeatureD16;
+
+  if (RegNo > 31 || (hasD16 && RegNo > 15))
     return MCDisassembler::Fail;
 
   unsigned Register = DPRDecoderTable[RegNo];
@@ -2975,11 +2979,9 @@ static DecodeStatus DecodeVLD4DupInstruction(MCInst &Inst, unsigned Insn,
   if (size == 0x3) {
     if (align == 0)
       return MCDisassembler::Fail;
-    size = 4;
     align = 16;
   } else {
     if (size == 2) {
-      size = 1 << size;
       align *= 8;
     } else {
       size = 1 << size;
