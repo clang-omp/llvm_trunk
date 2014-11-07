@@ -20492,6 +20492,11 @@ X86TargetLowering::emitFMA3Instr(MachineInstr *MI,
         case X86::VFNMSUBPSr213r: NewFMAOpc = X86::VFNMSUBPSr231r; break;
         case X86::VFNMSUBSDr213r: NewFMAOpc = X86::VFNMSUBSDr231r; break;
         case X86::VFNMSUBSSr213r: NewFMAOpc = X86::VFNMSUBSSr231r; break;
+        case X86::VFMADDSUBPDr213r: NewFMAOpc = X86::VFMADDSUBPDr231r; break;
+        case X86::VFMADDSUBPSr213r: NewFMAOpc = X86::VFMADDSUBPSr231r; break;
+        case X86::VFMSUBADDPDr213r: NewFMAOpc = X86::VFMSUBADDPDr231r; break;
+        case X86::VFMSUBADDPSr213r: NewFMAOpc = X86::VFMSUBADDPSr231r; break;
+
         case X86::VFMADDPDr213rY: NewFMAOpc = X86::VFMADDPDr231rY; break;
         case X86::VFMADDPSr213rY: NewFMAOpc = X86::VFMADDPSr231rY; break;
         case X86::VFMSUBPDr213rY: NewFMAOpc = X86::VFMSUBPDr231rY; break;
@@ -20500,6 +20505,10 @@ X86TargetLowering::emitFMA3Instr(MachineInstr *MI,
         case X86::VFNMADDPSr213rY: NewFMAOpc = X86::VFNMADDPSr231rY; break;
         case X86::VFNMSUBPDr213rY: NewFMAOpc = X86::VFNMSUBPDr231rY; break;
         case X86::VFNMSUBPSr213rY: NewFMAOpc = X86::VFNMSUBPSr231rY; break;
+        case X86::VFMADDSUBPDr213rY: NewFMAOpc = X86::VFMADDSUBPDr231rY; break;
+        case X86::VFMADDSUBPSr213rY: NewFMAOpc = X86::VFMADDSUBPSr231rY; break;
+        case X86::VFMSUBADDPDr213rY: NewFMAOpc = X86::VFMSUBADDPDr231rY; break;
+        case X86::VFMSUBADDPSr213rY: NewFMAOpc = X86::VFMSUBADDPSr231rY; break;
         default: llvm_unreachable("Unrecognized FMA variant.");
       }
 
@@ -20710,6 +20719,10 @@ X86TargetLowering::EmitInstrWithCustomInserter(MachineInstr *MI,
   case X86::VFNMSUBPSr213r:
   case X86::VFNMSUBSDr213r:
   case X86::VFNMSUBSSr213r:
+  case X86::VFMADDSUBPDr213r:
+  case X86::VFMADDSUBPSr213r:
+  case X86::VFMSUBADDPDr213r:
+  case X86::VFMSUBADDPSr213r:
   case X86::VFMADDPDr213rY:
   case X86::VFMADDPSr213rY:
   case X86::VFMSUBPDr213rY:
@@ -20718,6 +20731,10 @@ X86TargetLowering::EmitInstrWithCustomInserter(MachineInstr *MI,
   case X86::VFNMADDPSr213rY:
   case X86::VFNMSUBPDr213rY:
   case X86::VFNMSUBPSr213rY:
+  case X86::VFMADDSUBPDr213rY:
+  case X86::VFMADDSUBPSr213rY:
+  case X86::VFMSUBADDPDr213rY:
+  case X86::VFMSUBADDPSr213rY:
     return emitFMA3Instr(MI, BB);
   }
 }

@@ -368,13 +368,9 @@ namespace llvm {
              CCState &Info);
 
       void analyzeCallOperands(const SmallVectorImpl<ISD::OutputArg> &Outs,
-                               bool IsVarArg, bool IsSoftFloat,
-                               const SDNode *CallNode,
+                               bool IsVarArg, const SDNode *CallNode,
                                std::vector<ArgListEntry> &FuncArgs,
                                CCState &State);
-      void analyzeFormalArguments(const SmallVectorImpl<ISD::InputArg> &Ins,
-                                  bool IsSoftFloat,
-                                  CCState &State);
 
       /// reservedArgArea - The size of the area the caller reserves for
       /// register arguments. This is 16-byte if ABI is O32.
