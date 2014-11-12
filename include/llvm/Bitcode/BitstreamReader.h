@@ -17,7 +17,7 @@
 
 #include "llvm/Bitcode/BitCodes.h"
 #include "llvm/Support/Endian.h"
-#include "llvm/Support/StreamableMemoryObject.h"
+#include "llvm/Support/StreamingMemoryObject.h"
 #include <climits>
 #include <string>
 #include <vector>
@@ -42,7 +42,7 @@ public:
     std::vector<std::pair<unsigned, std::string> > RecordNames;
   };
 private:
-  std::unique_ptr<StreamableMemoryObject> BitcodeBytes;
+  std::unique_ptr<MemoryObject> BitcodeBytes;
 
   std::vector<BlockInfo> BlockInfoRecords;
 
@@ -61,7 +61,7 @@ public:
     init(Start, End);
   }
 
-  BitstreamReader(StreamableMemoryObject *bytes) : IgnoreBlockInfoNames(true) {
+  BitstreamReader(MemoryObject *bytes) : IgnoreBlockInfoNames(true) {
     BitcodeBytes.reset(bytes);
   }
 
@@ -82,7 +82,7 @@ public:
     BitcodeBytes.reset(getNonStreamedMemoryObject(Start, End));
   }
 
-  StreamableMemoryObject &getBitcodeBytes() { return *BitcodeBytes; }
+  MemoryObject &getBitcodeBytes() { return *BitcodeBytes; }
 
   /// This is called by clients that want block/record name information.
   void CollectBlockInfoNames() { IgnoreBlockInfoNames = false; }
@@ -228,12 +228,6 @@ public:
     // pos can be skipped to if it is a valid address or one byte past the end.
     return pos == 0 || BitStream->getBitcodeBytes().isValidAddress(
         static_cast<uint64_t>(pos - 1));
-  }
-
-  uint32_t getWord(size_t pos) {
-    uint8_t buf[4] = { 0xFF, 0xFF, 0xFF, 0xFF };
-    BitStream->getBitcodeBytes().readBytes(pos, sizeof(buf), buf);
-    return *reinterpret_cast<support::ulittle32_t *>(buf);
   }
 
   bool AtEndOfStream() {

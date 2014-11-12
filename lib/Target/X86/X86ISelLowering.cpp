@@ -9046,6 +9046,12 @@ static SDValue lowerV8I16VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
                                                          Mask, Subtarget, DAG))
       return V;
 
+  // Use dedicated unpack instructions for masks that match their pattern.
+  if (isShuffleEquivalent(Mask, 0, 8, 1, 9, 2, 10, 3, 11))
+    return DAG.getNode(X86ISD::UNPCKL, DL, MVT::v8i16, V1, V2);
+  if (isShuffleEquivalent(Mask, 4, 12, 5, 13, 6, 14, 7, 15))
+    return DAG.getNode(X86ISD::UNPCKH, DL, MVT::v8i16, V1, V2);
+
   if (Subtarget->hasSSE41())
     if (SDValue Blend = lowerVectorShuffleAsBlend(DL, MVT::v8i16, V1, V2, Mask,
                                                   Subtarget, DAG))
@@ -12792,6 +12798,7 @@ GetTLSADDR(SelectionDAG &DAG, SDValue Chain, GlobalAddressSDNode *GA,
 
   // TLSADDR will be codegen'ed as call. Inform MFI that function has calls.
   MFI->setAdjustsStack(true);
+  MFI->setHasCalls(true);
 
   SDValue Flag = Chain.getValue(1);
   return DAG.getCopyFromReg(Chain, dl, ReturnReg, PtrVT, Flag);
@@ -14509,6 +14516,37 @@ SDValue X86TargetLowering::getRsqrtEstimate(SDValue Op,
     RefinementSteps = 1;
     UseOneConstNR = false;
     return DCI.DAG.getNode(X86ISD::FRSQRT, SDLoc(Op), VT, Op);
+  }
+  return SDValue();
+}
+
+/// The minimum architected relative accuracy is 2^-12. We need one
+/// Newton-Raphson step to have a good float result (24 bits of precision).
+SDValue X86TargetLowering::getRecipEstimate(SDValue Op,
+                                            DAGCombinerInfo &DCI,
+                                            unsigned &RefinementSteps) const {
+  // FIXME: We should use instruction latency models to calculate the cost of
+  // each potential sequence, but this is very hard to do reliably because
+  // at least Intel's Core* chips have variable timing based on the number of
+  // significant digits in the divisor.
+  if (!Subtarget->useReciprocalEst())
+    return SDValue();
+  
+  EVT VT = Op.getValueType();
+  
+  // SSE1 has rcpss and rcpps. AVX adds a 256-bit variant for rcpps.
+  // TODO: Add support for AVX512 (v16f32).
+  // It is likely not profitable to do this for f64 because a double-precision
+  // reciprocal estimate with refinement on x86 prior to FMA requires
+  // 15 instructions: convert to single, rcpss, convert back to double, refine
+  // (3 steps = 12 insts). If an 'rcpsd' variant was added to the ISA
+  // along with FMA, this could be a throughput win.
+  if ((Subtarget->hasSSE1() && (VT == MVT::f32 || VT == MVT::v4f32)) ||
+      (Subtarget->hasAVX() && VT == MVT::v8f32)) {
+    // TODO: Expose this as a user-configurable parameter to allow for
+    // speed vs. accuracy flexibility.
+    RefinementSteps = 1;
+    return DCI.DAG.getNode(X86ISD::FRCP, SDLoc(Op), VT, Op);
   }
   return SDValue();
 }
@@ -16278,7 +16316,9 @@ static SDValue getTargetVShiftNode(unsigned Opc, SDLoc dl, MVT VT,
 /// (vselect \p Mask, \p Op, \p PreservedSrc) for others along with the
 /// necessary casting for \p Mask when lowering masking intrinsics.
 static SDValue getVectorMaskingNode(SDValue Op, SDValue Mask,
-                                    SDValue PreservedSrc, SelectionDAG &DAG) {
+                                    SDValue PreservedSrc,
+                                    const X86Subtarget *Subtarget,
+                                    SelectionDAG &DAG) {
     EVT VT = Op.getValueType();
     EVT MaskVT = EVT::getVectorVT(*DAG.getContext(),
                                   MVT::i1, VT.getVectorNumElements());
@@ -16305,7 +16345,8 @@ static SDValue getVectorMaskingNode(SDValue Op, SDValue Mask,
       case X86ISD::CMPMU:
         return DAG.getNode(ISD::AND, dl, VT, Op, VMask);
     }
-
+    if (PreservedSrc.getOpcode() == ISD::UNDEF)
+      PreservedSrc = getZeroVector(VT, Subtarget, DAG, dl);
     return DAG.getNode(ISD::VSELECT, dl, VT, VMask, Op, PreservedSrc);
 }
 
@@ -16357,10 +16398,11 @@ static unsigned getOpcodeForFMAIntrinsic(unsigned IntNo) {
     }
 }
 
-static SDValue LowerINTRINSIC_WO_CHAIN(SDValue Op, SelectionDAG &DAG) {
+static SDValue LowerINTRINSIC_WO_CHAIN(SDValue Op, const X86Subtarget *Subtarget,
+                                       SelectionDAG &DAG) {
   SDLoc dl(Op);
   unsigned IntNo = cast<ConstantSDNode>(Op.getOperand(0))->getZExtValue();
-
+  EVT VT = Op.getValueType();
   const IntrinsicData* IntrData = getIntrinsicWithoutChain(IntNo);
   if (IntrData) {
     switch(IntrData->Type) {
@@ -16372,6 +16414,16 @@ static SDValue LowerINTRINSIC_WO_CHAIN(SDValue Op, SelectionDAG &DAG) {
     case INTR_TYPE_3OP:
       return DAG.getNode(IntrData->Opc0, dl, Op.getValueType(), Op.getOperand(1),
         Op.getOperand(2), Op.getOperand(3));
+    case INTR_TYPE_1OP_MASK_RM: {
+      SDValue Src = Op.getOperand(1);
+      SDValue Src0 = Op.getOperand(2);
+      SDValue Mask = Op.getOperand(3);
+      SDValue RoundingMode = Op.getOperand(4);
+      return getVectorMaskingNode(DAG.getNode(IntrData->Opc0, dl, VT, Src,
+                                              RoundingMode),
+                                  Mask, Src0, Subtarget, DAG);
+    }
+                                              
     case CMP_MASK:
     case CMP_MASK_CC: {
       // Comparison intrinsics with masks.
@@ -16399,7 +16451,8 @@ static SDValue LowerINTRINSIC_WO_CHAIN(SDValue Op, SelectionDAG &DAG) {
                     Op.getOperand(2));
       }
       SDValue CmpMask = getVectorMaskingNode(Cmp, Mask,
-                                        DAG.getTargetConstant(0, MaskVT), DAG);
+                                             DAG.getTargetConstant(0, MaskVT),
+                                             Subtarget, DAG);
       SDValue Res = DAG.getNode(ISD::INSERT_SUBVECTOR, dl, BitcastVT,
                                 DAG.getUNDEF(BitcastVT), CmpMask,
                                 DAG.getIntPtrConstant(0));
@@ -16566,7 +16619,8 @@ static SDValue LowerINTRINSIC_WO_CHAIN(SDValue Op, SelectionDAG &DAG) {
                                             Op.getValueType(), Op.getOperand(2),
                                             Op.getOperand(1),
                                             Op.getOperand(3)),
-                                Op.getOperand(5), Op.getOperand(4), DAG);
+                                Op.getOperand(5), Op.getOperand(4),
+                                Subtarget, DAG);
 
   // ptest and testp intrinsics. The intrinsic these come from are designed to
   // return an integer value, not just an instruction so lower it to the ptest
@@ -16740,7 +16794,8 @@ static SDValue LowerINTRINSIC_WO_CHAIN(SDValue Op, SelectionDAG &DAG) {
                                               Op.getOperand(1),
                                               Op.getOperand(2),
                                               Op.getOperand(3)),
-                                  Op.getOperand(4), Op.getOperand(1), DAG);
+                                  Op.getOperand(4), Op.getOperand(1),
+                                  Subtarget, DAG);
     else
       return SDValue();
   }
@@ -18855,7 +18910,7 @@ SDValue X86TargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
   case ISD::VASTART:            return LowerVASTART(Op, DAG);
   case ISD::VAARG:              return LowerVAARG(Op, DAG);
   case ISD::VACOPY:             return LowerVACOPY(Op, Subtarget, DAG);
-  case ISD::INTRINSIC_WO_CHAIN: return LowerINTRINSIC_WO_CHAIN(Op, DAG);
+  case ISD::INTRINSIC_WO_CHAIN: return LowerINTRINSIC_WO_CHAIN(Op, Subtarget, DAG);
   case ISD::INTRINSIC_VOID:
   case ISD::INTRINSIC_W_CHAIN:  return LowerINTRINSIC_W_CHAIN(Op, Subtarget, DAG);
   case ISD::RETURNADDR:         return LowerRETURNADDR(Op, DAG);
@@ -19482,7 +19537,8 @@ X86TargetLowering::isShuffleMaskLegal(const SmallVectorImpl<int> &M,
           isUNPCKHMask(M, SVT, Subtarget->hasInt256()) ||
           isUNPCKL_v_undef_Mask(M, SVT, Subtarget->hasInt256()) ||
           isUNPCKH_v_undef_Mask(M, SVT, Subtarget->hasInt256()) ||
-          isBlendMask(M, SVT, Subtarget->hasSSE41(), Subtarget->hasInt256()));
+          isBlendMask(M, SVT, Subtarget->hasSSE41(), Subtarget->hasInt256()) ||
+          (Subtarget->hasSSE41() && isINSERTPSMask(M, SVT)));
 }
 
 bool

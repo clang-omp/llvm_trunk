@@ -1,4 +1,4 @@
-//===- StreamableMemoryObject.cpp - Streamable data interface -------------===//
+//===- StreamingMemoryObject.cpp - Streamable data interface -------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -7,7 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/Support/StreamableMemoryObject.h"
+#include "llvm/Support/StreamingMemoryObject.h"
 #include "llvm/Support/Compiler.h"
 #include <cassert>
 #include <cstddef>
@@ -18,18 +18,16 @@ using namespace llvm;
 
 namespace {
 
-class RawMemoryObject : public StreamableMemoryObject {
+class RawMemoryObject : public MemoryObject {
 public:
   RawMemoryObject(const unsigned char *Start, const unsigned char *End) :
     FirstChar(Start), LastChar(End) {
     assert(LastChar >= FirstChar && "Invalid start/end range");
   }
 
-  uint64_t getBase() const override { return 0; }
   uint64_t getExtent() const override {
     return LastChar - FirstChar;
   }
-  int readByte(uint64_t address, uint8_t* ptr) const override;
   int readBytes(uint64_t address, uint64_t size,
                 uint8_t *buf) const override;
   const uint8_t *getPointer(uint64_t address, uint64_t size) const override;
@@ -56,12 +54,6 @@ private:
   RawMemoryObject(const RawMemoryObject&) LLVM_DELETED_FUNCTION;
   void operator=(const RawMemoryObject&) LLVM_DELETED_FUNCTION;
 };
-
-int RawMemoryObject::readByte(uint64_t address, uint8_t* ptr) const {
-  if (!validAddress(address)) return -1;
-  *ptr = *((uint8_t *)(uintptr_t)(address + FirstChar));
-  return 0;
-}
 
 int RawMemoryObject::readBytes(uint64_t address,
                                uint64_t size,
@@ -99,12 +91,6 @@ uint64_t StreamingMemoryObject::getExtent() const {
   return ObjectSize;
 }
 
-int StreamingMemoryObject::readByte(uint64_t address, uint8_t* ptr) const {
-  if (!fetchToPos(address)) return -1;
-  *ptr = Bytes[address + BytesSkipped];
-  return 0;
-}
-
 int StreamingMemoryObject::readBytes(uint64_t address,
                                      uint64_t size,
                                      uint8_t *buf) const {
@@ -125,12 +111,10 @@ void StreamingMemoryObject::setKnownObjectSize(size_t size) {
   Bytes.reserve(size);
 }
 
-StreamableMemoryObject *getNonStreamedMemoryObject(
-    const unsigned char *Start, const unsigned char *End) {
+MemoryObject *getNonStreamedMemoryObject(const unsigned char *Start,
+                                         const unsigned char *End) {
   return new RawMemoryObject(Start, End);
 }
-
-StreamableMemoryObject::~StreamableMemoryObject() { }
 
 StreamingMemoryObject::StreamingMemoryObject(DataStreamer *streamer) :
   Bytes(kChunkSize), Streamer(streamer), BytesRead(0), BytesSkipped(0),
