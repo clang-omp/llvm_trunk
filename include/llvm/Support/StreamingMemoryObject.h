@@ -27,8 +27,8 @@ class StreamingMemoryObject : public MemoryObject {
 public:
   StreamingMemoryObject(DataStreamer *streamer);
   uint64_t getExtent() const override;
-  int readBytes(uint64_t address, uint64_t size,
-                uint8_t *buf) const override;
+  uint64_t readBytes(uint8_t *Buf, uint64_t Size,
+                     uint64_t Address) const override;
   const uint8_t *getPointer(uint64_t address, uint64_t size) const override {
     // This could be fixed by ensuring the bytes are fetched and making a copy,
     // requiring that the bitcode size be known, or otherwise ensuring that
@@ -38,7 +38,6 @@ public:
     return nullptr;
   }
   bool isValidAddress(uint64_t address) const override;
-  bool isObjectEnd(uint64_t address) const override;
 
   /// Drop s bytes from the front of the stream, pushing the positions of the
   /// remaining bytes down by s. This is used to skip past the bitcode header,
@@ -72,14 +71,10 @@ private:
       size_t bytes = Streamer->GetBytes(&Bytes[BytesRead + BytesSkipped],
                                         kChunkSize);
       BytesRead += bytes;
-      if (bytes < kChunkSize) {
-        assert((!ObjectSize || BytesRead >= Pos) &&
-               "Unexpected short read fetching bitcode");
-        if (BytesRead <= Pos) { // reached EOF/ran out of bytes
-          ObjectSize = BytesRead;
-          EOFReached = true;
-          return false;
-        }
+      if (BytesRead <= Pos) { // reached EOF/ran out of bytes
+        ObjectSize = BytesRead;
+        EOFReached = true;
+        return false;
       }
     }
     return true;

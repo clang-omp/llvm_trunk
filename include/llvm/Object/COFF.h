@@ -375,9 +375,9 @@ struct coff_section {
   // Returns true if the actual number of relocations is stored in
   // VirtualAddress field of the first relocation table entry.
   bool hasExtendedRelocations() const {
-    return Characteristics & COFF::IMAGE_SCN_LNK_NRELOC_OVFL &&
-        NumberOfRelocations == UINT16_MAX;
-  };
+    return (Characteristics & COFF::IMAGE_SCN_LNK_NRELOC_OVFL) &&
+           NumberOfRelocations == UINT16_MAX;
+  }
 };
 
 struct coff_relocation {
@@ -688,6 +688,7 @@ public:
                               StringRef &Name) const;
 
   bool isRelocatableObject() const override;
+  bool is64() const { return PE32PlusHeader; }
 
   static inline bool classof(const Binary *v) { return v->isCOFF(); }
 };
@@ -740,6 +741,7 @@ public:
   std::error_code getName(StringRef &Result) const;
   std::error_code getDelayImportTable(
       const delay_import_directory_table_entry *&Result) const;
+  std::error_code getImportAddress(int AddrIndex, uint64_t &Result) const;
 
 private:
   const delay_import_directory_table_entry *Table;

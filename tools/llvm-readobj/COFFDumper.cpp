@@ -81,6 +81,9 @@ private:
   std::error_code resolveSymbolName(const coff_section *Section,
                                     uint64_t Offset, StringRef &Name);
   void printImportedSymbols(iterator_range<imported_symbol_iterator> Range);
+  void printDelayImportedSymbols(
+      const DelayImportDirectoryEntryRef &I,
+      iterator_range<imported_symbol_iterator> Range);
 
   typedef DenseMap<const coff_section*, std::vector<RelocationRef> > RelocMapTy;
 
@@ -669,12 +672,12 @@ void COFFDumper::printCodeViewSymbolsSubsection(StringRef Subsection,
         return;
       Offset += 4;
       DE.getU8(&Offset, Unused, 3);
-      StringRef FunctionName = DE.getCStr(&Offset);
+      StringRef DisplayName = DE.getCStr(&Offset);
       if (!DE.isValidOffset(Offset)) {
         error(object_error::parse_failed);
         return;
       }
-      W.printString("FunctionName", FunctionName);
+      W.printString("DisplayName", DisplayName);
       W.printString("Section", SectionName);
       W.printHex("CodeSize", CodeSize);
 
@@ -789,7 +792,6 @@ void COFFDumper::printRelocation(const SectionRef &Section,
   uint64_t RelocType;
   SmallString<32> RelocName;
   StringRef SymbolName;
-  StringRef Contents;
   if (error(Reloc.getOffset(Offset)))
     return;
   if (error(Reloc.getType(RelocType)))
@@ -797,21 +799,19 @@ void COFFDumper::printRelocation(const SectionRef &Section,
   if (error(Reloc.getTypeName(RelocName)))
     return;
   symbol_iterator Symbol = Reloc.getSymbol();
-  if (error(Symbol->getName(SymbolName)))
-    return;
-  if (error(Section.getContents(Contents)))
+  if (Symbol != Obj->symbol_end() && error(Symbol->getName(SymbolName)))
     return;
 
   if (opts::ExpandRelocs) {
     DictScope Group(W, "Relocation");
     W.printHex("Offset", Offset);
     W.printNumber("Type", RelocName, RelocType);
-    W.printString("Symbol", SymbolName.size() > 0 ? SymbolName : "-");
+    W.printString("Symbol", SymbolName.empty() ? "-" : SymbolName);
   } else {
     raw_ostream& OS = W.startLine();
     OS << W.hex(Offset)
        << " " << RelocName
-       << " " << (SymbolName.size() > 0 ? SymbolName : "-")
+       << " " << (SymbolName.empty() ? "-" : SymbolName)
        << "\n";
   }
 }
@@ -1002,6 +1002,23 @@ void COFFDumper::printImportedSymbols(
   }
 }
 
+void COFFDumper::printDelayImportedSymbols(
+    const DelayImportDirectoryEntryRef &I,
+    iterator_range<imported_symbol_iterator> Range) {
+  int Index = 0;
+  for (const ImportedSymbolRef &S : Range) {
+    DictScope Import(W, "Import");
+    StringRef Sym;
+    if (error(S.getSymbolName(Sym))) return;
+    uint16_t Ordinal;
+    if (error(S.getOrdinal(Ordinal))) return;
+    W.printNumber("Symbol", Sym, Ordinal);
+    uint64_t Addr;
+    if (error(I.getImportAddress(Index++, Addr))) return;
+    W.printHex("Address", Addr);
+  }
+}
+
 void COFFDumper::printCOFFImports() {
   // Regular imports
   for (const ImportDirectoryEntryRef &I : Obj->import_directories()) {
@@ -1031,7 +1048,7 @@ void COFFDumper::printCOFFImports() {
     W.printHex("ImportNameTable", Table->DelayImportNameTable);
     W.printHex("BoundDelayImportTable", Table->BoundDelayImportTable);
     W.printHex("UnloadDelayImportTable", Table->UnloadDelayImportTable);
-    printImportedSymbols(I.imported_symbols());
+    printDelayImportedSymbols(I, I.imported_symbols());
   }
 }
 

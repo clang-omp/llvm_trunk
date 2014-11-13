@@ -39,17 +39,25 @@ static bool checkSize(MemoryBufferRef M, std::error_code &EC, uint64_t Size) {
   return true;
 }
 
+static std::error_code checkOffset(MemoryBufferRef M, uintptr_t Addr,
+                                   const uint64_t Size) {
+  if (Addr + Size < Addr || Addr + Size < Size ||
+      Addr + Size > uintptr_t(M.getBufferEnd()) ||
+      Addr < uintptr_t(M.getBufferStart())) {
+    return object_error::unexpected_eof;
+  }
+  return object_error::success;
+}
+
 // Sets Obj unless any bytes in [addr, addr + size) fall outsize of m.
 // Returns unexpected_eof if error.
 template <typename T>
 static std::error_code getObject(const T *&Obj, MemoryBufferRef M,
-                                 const uint8_t *Ptr,
+                                 const void *Ptr,
                                  const size_t Size = sizeof(T)) {
   uintptr_t Addr = uintptr_t(Ptr);
-  if (Addr + Size < Addr || Addr + Size < Size ||
-      Addr + Size > uintptr_t(M.getBufferEnd())) {
-    return object_error::unexpected_eof;
-  }
+  if (std::error_code EC = checkOffset(M, Addr, Size))
+    return EC;
   Obj = reinterpret_cast<const T *>(Addr);
   return object_error::success;
 }
@@ -384,49 +392,54 @@ bool COFFObjectFile::sectionContainsSymbol(DataRefImpl SecRef,
   return SecNumber == Symb.getSectionNumber();
 }
 
-relocation_iterator COFFObjectFile::section_rel_begin(DataRefImpl Ref) const {
-  const coff_section *Sec = toSec(Ref);
-  DataRefImpl Ret;
-  if (Sec->NumberOfRelocations == 0) {
-    Ret.p = 0;
-  } else {
-    auto begin = reinterpret_cast<const coff_relocation*>(
-        base() + Sec->PointerToRelocations);
-    if (Sec->hasExtendedRelocations()) {
-      // Skip the first relocation entry repurposed to store the number of
-      // relocations.
-      begin++;
-    }
-    Ret.p = reinterpret_cast<uintptr_t>(begin);
-  }
-  return relocation_iterator(RelocationRef(Ret, this));
-}
-
 static uint32_t getNumberOfRelocations(const coff_section *Sec,
-                                       const uint8_t *base) {
+                                       MemoryBufferRef M, const uint8_t *base) {
   // The field for the number of relocations in COFF section table is only
   // 16-bit wide. If a section has more than 65535 relocations, 0xFFFF is set to
   // NumberOfRelocations field, and the actual relocation count is stored in the
   // VirtualAddress field in the first relocation entry.
   if (Sec->hasExtendedRelocations()) {
-    auto *FirstReloc = reinterpret_cast<const coff_relocation*>(
-        base + Sec->PointerToRelocations);
+    const coff_relocation *FirstReloc;
+    if (getObject(FirstReloc, M, reinterpret_cast<const coff_relocation*>(
+        base + Sec->PointerToRelocations)))
+      return 0;
     return FirstReloc->VirtualAddress;
   }
   return Sec->NumberOfRelocations;
 }
 
+static const coff_relocation *
+getFirstReloc(const coff_section *Sec, MemoryBufferRef M, const uint8_t *Base) {
+  uint64_t NumRelocs = getNumberOfRelocations(Sec, M, Base);
+  if (!NumRelocs)
+    return nullptr;
+  auto begin = reinterpret_cast<const coff_relocation *>(
+      Base + Sec->PointerToRelocations);
+  if (Sec->hasExtendedRelocations()) {
+    // Skip the first relocation entry repurposed to store the number of
+    // relocations.
+    begin++;
+  }
+  if (checkOffset(M, uintptr_t(begin), sizeof(coff_relocation) * NumRelocs))
+    return nullptr;
+  return begin;
+}
+
+relocation_iterator COFFObjectFile::section_rel_begin(DataRefImpl Ref) const {
+  const coff_section *Sec = toSec(Ref);
+  const coff_relocation *begin = getFirstReloc(Sec, Data, base());
+  DataRefImpl Ret;
+  Ret.p = reinterpret_cast<uintptr_t>(begin);
+  return relocation_iterator(RelocationRef(Ret, this));
+}
+
 relocation_iterator COFFObjectFile::section_rel_end(DataRefImpl Ref) const {
   const coff_section *Sec = toSec(Ref);
+  const coff_relocation *I = getFirstReloc(Sec, Data, base());
+  if (I)
+    I += getNumberOfRelocations(Sec, Data, base());
   DataRefImpl Ret;
-  if (Sec->NumberOfRelocations == 0) {
-    Ret.p = 0;
-  } else {
-    auto begin = reinterpret_cast<const coff_relocation*>(
-        base() + Sec->PointerToRelocations);
-    uint32_t NumReloc = getNumberOfRelocations(Sec, base());
-    Ret.p = reinterpret_cast<uintptr_t>(begin + NumReloc);
-  }
+  Ret.p = reinterpret_cast<uintptr_t>(I);
   return relocation_iterator(RelocationRef(Ret, this));
 }
 
@@ -901,9 +914,9 @@ std::error_code COFFObjectFile::getSectionName(const coff_section *Sec,
     Name = StringRef(Sec->Name, COFF::NameSize);
 
   // Check for string table entry. First byte is '/'.
-  if (Name[0] == '/') {
+  if (Name.startswith("/")) {
     uint32_t Offset;
-    if (Name[1] == '/') {
+    if (Name.startswith("//")) {
       if (decodeBase64StringEntry(Name.substr(2), Offset))
         return object_error::parse_failed;
     } else {
@@ -950,8 +963,7 @@ COFFObjectFile::getSectionContents(const coff_section *Sec,
   // data, as there's nothing that says that is not allowed.
   uintptr_t ConStart = uintptr_t(base()) + Sec->PointerToRawData;
   uint32_t SectionSize = getSectionSize(Sec);
-  uintptr_t ConEnd = ConStart + SectionSize;
-  if (ConEnd > uintptr_t(Data.getBufferEnd()))
+  if (checkOffset(Data, ConStart, SectionSize))
     return object_error::parse_failed;
   Res = makeArrayRef(reinterpret_cast<const uint8_t *>(ConStart), SectionSize);
   return object_error::success;
@@ -973,7 +985,12 @@ std::error_code COFFObjectFile::getRelocationAddress(DataRefImpl Rel,
 
 std::error_code COFFObjectFile::getRelocationOffset(DataRefImpl Rel,
                                                     uint64_t &Res) const {
-  Res = toRel(Rel)->VirtualAddress;
+  const coff_relocation *R = toRel(Rel);
+  const support::ulittle32_t *VirtualAddressPtr;
+  if (std::error_code EC =
+          getObject(VirtualAddressPtr, Data, &R->VirtualAddress))
+    return EC;
+  Res = *VirtualAddressPtr;
   return object_error::success;
 }
 
@@ -985,7 +1002,7 @@ symbol_iterator COFFObjectFile::getRelocationSymbol(DataRefImpl Rel) const {
   else if (SymbolTable32)
     Ref.p = reinterpret_cast<uintptr_t>(SymbolTable32 + R->SymbolTableIndex);
   else
-    llvm_unreachable("no symbol table pointer!");
+    return symbol_end();
   return symbol_iterator(SymbolRef(Ref, this));
 }
 
@@ -1255,6 +1272,20 @@ std::error_code DelayImportDirectoryEntryRef::getName(StringRef &Result) const {
 std::error_code DelayImportDirectoryEntryRef::
 getDelayImportTable(const delay_import_directory_table_entry *&Result) const {
   Result = Table;
+  return object_error::success;
+}
+
+std::error_code DelayImportDirectoryEntryRef::
+getImportAddress(int AddrIndex, uint64_t &Result) const {
+  uint32_t RVA = Table[Index].DelayImportAddressTable +
+      AddrIndex * (OwningObject->is64() ? 8 : 4);
+  uintptr_t IntPtr = 0;
+  if (std::error_code EC = OwningObject->getRvaPtr(RVA, IntPtr))
+    return EC;
+  if (OwningObject->is64())
+    Result = *reinterpret_cast<const uint64_t *>(IntPtr);
+  else
+    Result = *reinterpret_cast<const uint32_t *>(IntPtr);
   return object_error::success;
 }
 

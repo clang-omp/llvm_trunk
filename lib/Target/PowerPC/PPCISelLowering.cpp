@@ -55,17 +55,8 @@ cl::desc("disable unaligned load/store generation on PPC"), cl::Hidden);
 // FIXME: Remove this once the bug has been fixed!
 extern cl::opt<bool> ANDIGlueBug;
 
-static TargetLoweringObjectFile *createTLOF(const Triple &TT) {
-  // If it isn't a Mach-O file then it's going to be a linux ELF
-  // object file.
-  if (TT.isOSDarwin())
-    return new TargetLoweringObjectFileMachO();
-
-  return new PPC64LinuxTargetObjectFile();
-}
-
 PPCTargetLowering::PPCTargetLowering(const PPCTargetMachine &TM)
-    : TargetLowering(TM, createTLOF(Triple(TM.getTargetTriple()))),
+    : TargetLowering(TM, TM.getObjFileLowering()),
       Subtarget(*TM.getSubtargetImpl()) {
   setPow2SDivIsCheap();
 
@@ -1689,6 +1680,8 @@ SDValue PPCTargetLowering::LowerGlobalTLSAddress(SDValue Op,
   const GlobalValue *GV = GA->getGlobal();
   EVT PtrVT = getPointerTy();
   bool is64bit = Subtarget.isPPC64();
+  const Module *M = DAG.getMachineFunction().getFunction()->getParent();
+  PICLevel::Level picLevel = M->getPICLevel();
 
   TLSModel::Model Model = getTargetMachine().getTLSModel(GV);
 
@@ -1728,7 +1721,10 @@ SDValue PPCTargetLowering::LowerGlobalTLSAddress(SDValue Op,
       GOTPtr = DAG.getNode(PPCISD::ADDIS_TLSGD_HA, dl, PtrVT,
                                    GOTReg, TGA);
     } else {
-      GOTPtr = DAG.getNode(PPCISD::PPC32_PICGOT, dl, PtrVT);
+      if (picLevel == PICLevel::Small)
+        GOTPtr = DAG.getNode(PPCISD::GlobalBaseReg, dl, PtrVT);
+      else
+        GOTPtr = DAG.getNode(PPCISD::PPC32_PICGOT, dl, PtrVT);
     }
     SDValue GOTEntry = DAG.getNode(PPCISD::ADDI_TLSGD_L, dl, PtrVT,
                                    GOTPtr, TGA);
@@ -1745,7 +1741,10 @@ SDValue PPCTargetLowering::LowerGlobalTLSAddress(SDValue Op,
       GOTPtr = DAG.getNode(PPCISD::ADDIS_TLSLD_HA, dl, PtrVT,
                            GOTReg, TGA);
     } else {
-      GOTPtr = DAG.getNode(PPCISD::PPC32_PICGOT, dl, PtrVT);
+      if (picLevel == PICLevel::Small)
+        GOTPtr = DAG.getNode(PPCISD::GlobalBaseReg, dl, PtrVT);
+      else
+        GOTPtr = DAG.getNode(PPCISD::PPC32_PICGOT, dl, PtrVT);
     }
     SDValue GOTEntry = DAG.getNode(PPCISD::ADDI_TLSLD_L, dl, PtrVT,
                                    GOTPtr, TGA);

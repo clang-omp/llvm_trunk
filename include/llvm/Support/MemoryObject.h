@@ -22,9 +22,9 @@ namespace llvm {
 /// to return the right result, getExtent must also wait for all the data to
 /// arrive; therefore it should not be called on objects which are actually
 /// streamed (this would defeat the purpose of streaming). Instead,
-/// isValidAddress and isObjectEnd can be used to test addresses without knowing
-/// the exact size of the stream. Finally, getPointer can be used instead of
-/// readBytes to avoid extra copying.
+/// isValidAddress can be used to test addresses without knowing the exact size
+/// of the stream. Finally, getPointer can be used instead of readBytes to avoid
+/// extra copying.
 class MemoryObject {
 public:
   virtual ~MemoryObject();
@@ -36,18 +36,16 @@ public:
   virtual uint64_t getExtent() const = 0;
 
   /// Tries to read a contiguous range of bytes from the region, up to the end
-  /// of the region. You should override this function if there is a quicker way
-  /// than going back and forth with individual bytes.
+  /// of the region.
   ///
-  /// @param address  - The address of the first byte, in the same space as
-  ///                   getBase().
-  /// @param size     - The number of bytes to copy.
-  /// @param buf      - A pointer to a buffer to be filled in.  Must be non-NULL
+  /// @param Buf      - A pointer to a buffer to be filled in.  Must be non-NULL
   ///                   and large enough to hold size bytes.
-  /// @result         - 0 if successful; -1 if not.  Failure may be due to a
-  ///                   bounds violation or an implementation-specific error.
-  virtual int readBytes(uint64_t address, uint64_t size,
-                        uint8_t *buf) const = 0;
+  /// @param Size     - The number of bytes to copy.
+  /// @param Address  - The address of the first byte, in the same space as
+  ///                   getBase().
+  /// @result         - The number of bytes read.
+  virtual uint64_t readBytes(uint8_t *Buf, uint64_t Size,
+                             uint64_t Address) const = 0;
 
   /// Ensures that the requested data is in memory, and returns a pointer to it.
   /// More efficient than using readBytes if the data is already in memory. May
@@ -63,13 +61,6 @@ public:
   /// @param address - address of the byte, in the same space as getBase()
   /// @result        - true if the address may be read with readByte()
   virtual bool isValidAddress(uint64_t address) const = 0;
-
-  /// Returns true if the address is one past the end of the object (i.e. if it
-  /// is equal to base + extent). May block until (address - base) bytes have
-  /// been read
-  /// @param address - address of the byte, in the same space as getBase()
-  /// @result        - true if the address is equal to base + extent
-  virtual bool isObjectEnd(uint64_t address) const = 0;
 };
 
 }

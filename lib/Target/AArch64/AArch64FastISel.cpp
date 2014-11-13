@@ -150,6 +150,7 @@ private:
   bool foldXALUIntrinsic(AArch64CC::CondCode &CC, const Instruction *I,
                          const Value *Cond);
   bool optimizeIntExtLoad(const Instruction *I, MVT RetVT, MVT SrcVT);
+  bool optimizeSelect(const SelectInst *SI);
 
   // Emit helper routines.
   unsigned emitAddSub(bool UseAdd, MVT RetVT, const Value *LHS,
@@ -2496,60 +2497,186 @@ bool AArch64FastISel::selectCmp(const Instruction *I) {
   return true;
 }
 
+/// \brief Optimize selects of i1 if one of the operands has a 'true' or 'false'
+/// value.
+bool AArch64FastISel::optimizeSelect(const SelectInst *SI) {
+  if (!SI->getType()->isIntegerTy(1))
+    return false;
+
+  const Value *Src1Val, *Src2Val;
+  unsigned Opc = 0;
+  bool NeedExtraOp = false;
+  if (auto *CI = dyn_cast<ConstantInt>(SI->getTrueValue())) {
+    if (CI->isOne()) {
+      Src1Val = SI->getCondition();
+      Src2Val = SI->getFalseValue();
+      Opc = AArch64::ORRWrr;
+    } else {
+      assert(CI->isZero());
+      Src1Val = SI->getFalseValue();
+      Src2Val = SI->getCondition();
+      Opc = AArch64::BICWrr;
+    }
+  } else if (auto *CI = dyn_cast<ConstantInt>(SI->getFalseValue())) {
+    if (CI->isOne()) {
+      Src1Val = SI->getCondition();
+      Src2Val = SI->getTrueValue();
+      Opc = AArch64::ORRWrr;
+      NeedExtraOp = true;
+    } else {
+      assert(CI->isZero());
+      Src1Val = SI->getCondition();
+      Src2Val = SI->getTrueValue();
+      Opc = AArch64::ANDWrr;
+    }
+  }
+
+  if (!Opc)
+    return false;
+
+  unsigned Src1Reg = getRegForValue(Src1Val);
+  if (!Src1Reg)
+    return false;
+  bool Src1IsKill = hasTrivialKill(Src1Val);
+
+  unsigned Src2Reg = getRegForValue(Src2Val);
+  if (!Src2Reg)
+    return false;
+  bool Src2IsKill = hasTrivialKill(Src2Val);
+
+  if (NeedExtraOp) {
+    Src1Reg = emitLogicalOp_ri(ISD::XOR, MVT::i32, Src1Reg, Src1IsKill, 1);
+    Src1IsKill = true;
+  }
+  unsigned ResultReg = fastEmitInst_rr(Opc, &AArch64::GPR32spRegClass, Src1Reg,
+                                       Src1IsKill, Src2Reg, Src2IsKill);
+  updateValueMap(SI, ResultReg);
+  return true;
+}
+
 bool AArch64FastISel::selectSelect(const Instruction *I) {
-  const SelectInst *SI = cast<SelectInst>(I);
-
-  EVT DestEVT = TLI.getValueType(SI->getType(), true);
-  if (!DestEVT.isSimple())
+  assert(isa<SelectInst>(I) && "Expected a select instruction.");
+  MVT VT;
+  if (!isTypeSupported(I->getType(), VT))
     return false;
 
-  MVT DestVT = DestEVT.getSimpleVT();
-  if (DestVT != MVT::i32 && DestVT != MVT::i64 && DestVT != MVT::f32 &&
-      DestVT != MVT::f64)
+  unsigned Opc;
+  const TargetRegisterClass *RC;
+  switch (VT.SimpleTy) {
+  default:
     return false;
-
-  unsigned SelectOpc;
-  const TargetRegisterClass *RC = nullptr;
-  switch (DestVT.SimpleTy) {
-  default: return false;
+  case MVT::i1:
+  case MVT::i8:
+  case MVT::i16:
   case MVT::i32:
-    SelectOpc = AArch64::CSELWr;    RC = &AArch64::GPR32RegClass; break;
+    Opc = AArch64::CSELWr;
+    RC = &AArch64::GPR32RegClass;
+    break;
   case MVT::i64:
-    SelectOpc = AArch64::CSELXr;    RC = &AArch64::GPR64RegClass; break;
+    Opc = AArch64::CSELXr;
+    RC = &AArch64::GPR64RegClass;
+    break;
   case MVT::f32:
-    SelectOpc = AArch64::FCSELSrrr; RC = &AArch64::FPR32RegClass; break;
+    Opc = AArch64::FCSELSrrr;
+    RC = &AArch64::FPR32RegClass;
+    break;
   case MVT::f64:
-    SelectOpc = AArch64::FCSELDrrr; RC = &AArch64::FPR64RegClass; break;
+    Opc = AArch64::FCSELDrrr;
+    RC = &AArch64::FPR64RegClass;
+    break;
   }
 
+  const SelectInst *SI = cast<SelectInst>(I);
   const Value *Cond = SI->getCondition();
-  bool NeedTest = true;
   AArch64CC::CondCode CC = AArch64CC::NE;
-  if (foldXALUIntrinsic(CC, I, Cond))
-    NeedTest = false;
+  AArch64CC::CondCode ExtraCC = AArch64CC::AL;
 
-  unsigned CondReg = getRegForValue(Cond);
-  if (!CondReg)
-    return false;
-  bool CondIsKill = hasTrivialKill(Cond);
+  if (optimizeSelect(SI))
+    return true;
 
-  if (NeedTest) {
-    unsigned ANDReg = emitAnd_ri(MVT::i32, CondReg, CondIsKill, 1);
-    assert(ANDReg && "Unexpected AND instruction emission failure.");
-    emitICmp_ri(MVT::i32, ANDReg, /*IsKill=*/true, 0);
+  // Try to pickup the flags, so we don't have to emit another compare.
+  if (foldXALUIntrinsic(CC, I, Cond)) {
+    // Fake request the condition to force emission of the XALU intrinsic.
+    unsigned CondReg = getRegForValue(Cond);
+    if (!CondReg)
+      return false;
+  } else if (isa<CmpInst>(Cond) && cast<CmpInst>(Cond)->hasOneUse() &&
+             isValueAvailable(Cond)) {
+    const auto *Cmp = cast<CmpInst>(Cond);
+    // Try to optimize or fold the cmp.
+    CmpInst::Predicate Predicate = optimizeCmpPredicate(Cmp);
+    const Value *FoldSelect = nullptr;
+    switch (Predicate) {
+    default:
+      break;
+    case CmpInst::FCMP_FALSE:
+      FoldSelect = SI->getFalseValue();
+      break;
+    case CmpInst::FCMP_TRUE:
+      FoldSelect = SI->getTrueValue();
+      break;
+    }
+
+    if (FoldSelect) {
+      unsigned SrcReg = getRegForValue(FoldSelect);
+      if (!SrcReg)
+        return false;
+      unsigned UseReg = lookUpRegForValue(SI);
+      if (UseReg)
+        MRI.clearKillFlags(UseReg);
+
+      updateValueMap(I, SrcReg);
+      return true;
+    }
+
+    // Emit the cmp.
+    if (!emitCmp(Cmp->getOperand(0), Cmp->getOperand(1), Cmp->isUnsigned()))
+      return false;
+
+    // FCMP_UEQ and FCMP_ONE cannot be checked with a single select instruction.
+    CC = getCompareCC(Predicate);
+    switch (Predicate) {
+    default:
+      break;
+    case CmpInst::FCMP_UEQ:
+      ExtraCC = AArch64CC::EQ;
+      CC = AArch64CC::VS;
+      break;
+    case CmpInst::FCMP_ONE:
+      ExtraCC = AArch64CC::MI;
+      CC = AArch64CC::GT;
+      break;
+    }
+    assert((CC != AArch64CC::AL) && "Unexpected condition code.");
+  } else {
+    unsigned CondReg = getRegForValue(Cond);
+    if (!CondReg)
+      return false;
+    bool CondIsKill = hasTrivialKill(Cond);
+
+    // Emit a TST instruction (ANDS wzr, reg, #imm).
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(AArch64::ANDSWri),
+            AArch64::WZR)
+        .addReg(CondReg, getKillRegState(CondIsKill))
+        .addImm(AArch64_AM::encodeLogicalImmediate(1, 32));
   }
 
-  unsigned TrueReg = getRegForValue(SI->getTrueValue());
-  bool TrueIsKill = hasTrivialKill(SI->getTrueValue());
+  unsigned Src1Reg = getRegForValue(SI->getTrueValue());
+  bool Src1IsKill = hasTrivialKill(SI->getTrueValue());
 
-  unsigned FalseReg = getRegForValue(SI->getFalseValue());
-  bool FalseIsKill = hasTrivialKill(SI->getFalseValue());
+  unsigned Src2Reg = getRegForValue(SI->getFalseValue());
+  bool Src2IsKill = hasTrivialKill(SI->getFalseValue());
 
-  if (!TrueReg || !FalseReg)
+  if (!Src1Reg || !Src2Reg)
     return false;
 
-  unsigned ResultReg = fastEmitInst_rri(SelectOpc, RC, TrueReg, TrueIsKill,
-                                        FalseReg, FalseIsKill, CC);
+  if (ExtraCC != AArch64CC::AL) {
+    Src2Reg = fastEmitInst_rri(Opc, RC, Src1Reg, Src1IsKill, Src2Reg,
+                               Src2IsKill, ExtraCC);
+    Src2IsKill = true;
+  }
+  unsigned ResultReg = fastEmitInst_rri(Opc, RC, Src1Reg, Src1IsKill, Src2Reg,
+                                        Src2IsKill, CC);
   updateValueMap(I, ResultReg);
   return true;
 }

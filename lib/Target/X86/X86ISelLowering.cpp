@@ -71,6 +71,12 @@ static cl::opt<bool> ExperimentalVectorShuffleLowering(
     cl::desc("Enable an experimental vector shuffle lowering code path."),
     cl::Hidden);
 
+static cl::opt<int> ReciprocalEstimateRefinementSteps(
+    "x86-recip-refinement-steps", cl::init(1),
+    cl::desc("Specify the number of Newton-Raphson iterations applied to the "
+             "result of the hardware reciprocal estimate instruction."),
+    cl::NotHidden);
+
 // Forward declarations.
 static SDValue getMOVL(SelectionDAG &DAG, SDLoc dl, EVT VT, SDValue V1,
                        SDValue V2);
@@ -193,28 +199,10 @@ static SDValue Concat256BitVectors(SDValue V1, SDValue V2, EVT VT,
   return Insert256BitVector(V, V2, NumElems/2, DAG, dl);
 }
 
-static TargetLoweringObjectFile *createTLOF(const Triple &TT) {
-  if (TT.isOSBinFormatMachO()) {
-    if (TT.getArch() == Triple::x86_64)
-      return new X86_64MachoTargetObjectFile();
-    return new TargetLoweringObjectFileMachO();
-  }
-
-  if (TT.isOSLinux())
-    return new X86LinuxTargetObjectFile();
-  if (TT.isOSBinFormatELF())
-    return new TargetLoweringObjectFileELF();
-  if (TT.isKnownWindowsMSVCEnvironment())
-    return new X86WindowsTargetObjectFile();
-  if (TT.isOSBinFormatCOFF())
-    return new TargetLoweringObjectFileCOFF();
-  llvm_unreachable("unknown subtarget type");
-}
-
 // FIXME: This should stop caching the target machine as soon as
 // we can remove resetOperationActions et al.
 X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM)
-    : TargetLowering(TM, createTLOF(Triple(TM.getTargetTriple()))) {
+    : TargetLowering(TM, TM.getObjFileLowering()) {
   Subtarget = &TM.getSubtarget<X86Subtarget>();
   X86ScalarSSEf64 = Subtarget->hasSSE2();
   X86ScalarSSEf32 = Subtarget->hasSSE1();
@@ -1422,6 +1410,10 @@ void X86TargetLowering::resetOperationActions() {
     setOperationAction(ISD::FP_TO_UINT,         MVT::v8i32, Legal);
     setOperationAction(ISD::FP_TO_UINT,         MVT::v4i32, Legal);
     setOperationAction(ISD::SINT_TO_FP,         MVT::v16i32, Legal);
+    setOperationAction(ISD::SINT_TO_FP,         MVT::v8i1,   Custom);
+    setOperationAction(ISD::SINT_TO_FP,         MVT::v16i1,  Custom);
+    setOperationAction(ISD::SINT_TO_FP,         MVT::v16i8,  Promote);
+    setOperationAction(ISD::SINT_TO_FP,         MVT::v16i16, Promote);
     setOperationAction(ISD::UINT_TO_FP,         MVT::v16i32, Legal);
     setOperationAction(ISD::UINT_TO_FP,         MVT::v8i32, Legal);
     setOperationAction(ISD::UINT_TO_FP,         MVT::v4i32, Legal);
@@ -9608,14 +9600,23 @@ static SDValue splitAndLowerVectorShuffle(SDLoc DL, MVT VT, SDValue V1,
 
   // Now create two 4-way blends of these half-width vectors.
   auto HalfBlend = [&](ArrayRef<int> HalfMask) {
+    bool UseLoV1 = false, UseHiV1 = false, UseLoV2 = false, UseHiV2 = false;
     SmallVector<int, 32> V1BlendMask, V2BlendMask, BlendMask;
     for (int i = 0; i < SplitNumElements; ++i) {
       int M = HalfMask[i];
       if (M >= NumElements) {
+        if (M >= NumElements + SplitNumElements)
+          UseHiV2 = true;
+        else
+          UseLoV2 = true;
         V2BlendMask.push_back(M - NumElements);
         V1BlendMask.push_back(-1);
         BlendMask.push_back(SplitNumElements + i);
       } else if (M >= 0) {
+        if (M >= SplitNumElements)
+          UseHiV1 = true;
+        else
+          UseLoV1 = true;
         V2BlendMask.push_back(-1);
         V1BlendMask.push_back(M);
         BlendMask.push_back(i);
@@ -9625,15 +9626,103 @@ static SDValue splitAndLowerVectorShuffle(SDLoc DL, MVT VT, SDValue V1,
         BlendMask.push_back(-1);
       }
     }
-    SDValue V1Blend =
+
+    // Because the lowering happens after all combining takes place, we need to
+    // manually combine these blend masks as much as possible so that we create
+    // a minimal number of high-level vector shuffle nodes.
+
+    // First try just blending the halves of V1 or V2.
+    if (!UseLoV1 && !UseHiV1 && !UseLoV2 && !UseHiV2)
+      return DAG.getUNDEF(SplitVT);
+    if (!UseLoV2 && !UseHiV2)
+      return DAG.getVectorShuffle(SplitVT, DL, LoV1, HiV1, V1BlendMask);
+    if (!UseLoV1 && !UseHiV1)
+      return DAG.getVectorShuffle(SplitVT, DL, LoV2, HiV2, V2BlendMask);
+
+    SDValue V1Blend, V2Blend;
+    if (UseLoV1 && UseHiV1) {
+      V1Blend =
         DAG.getVectorShuffle(SplitVT, DL, LoV1, HiV1, V1BlendMask);
-    SDValue V2Blend =
+    } else {
+      // We only use half of V1 so map the usage down into the final blend mask.
+      V1Blend = UseLoV1 ? LoV1 : HiV1;
+      for (int i = 0; i < SplitNumElements; ++i)
+        if (BlendMask[i] >= 0 && BlendMask[i] < SplitNumElements)
+          BlendMask[i] = V1BlendMask[i] - (UseLoV1 ? 0 : SplitNumElements);
+    }
+    if (UseLoV2 && UseHiV2) {
+      V2Blend =
         DAG.getVectorShuffle(SplitVT, DL, LoV2, HiV2, V2BlendMask);
+    } else {
+      // We only use half of V2 so map the usage down into the final blend mask.
+      V2Blend = UseLoV2 ? LoV2 : HiV2;
+      for (int i = 0; i < SplitNumElements; ++i)
+        if (BlendMask[i] >= SplitNumElements)
+          BlendMask[i] = V2BlendMask[i] + (UseLoV2 ? SplitNumElements : 0);
+    }
     return DAG.getVectorShuffle(SplitVT, DL, V1Blend, V2Blend, BlendMask);
   };
   SDValue Lo = HalfBlend(LoMask);
   SDValue Hi = HalfBlend(HiMask);
   return DAG.getNode(ISD::CONCAT_VECTORS, DL, VT, Lo, Hi);
+}
+
+/// \brief Either split a vector in halves or decompose the shuffles and the
+/// blend.
+///
+/// This is provided as a good fallback for many lowerings of non-single-input
+/// shuffles with more than one 128-bit lane. In those cases, we want to select
+/// between splitting the shuffle into 128-bit components and stitching those
+/// back together vs. extracting the single-input shuffles and blending those
+/// results.
+static SDValue lowerVectorShuffleAsSplitOrBlend(SDLoc DL, MVT VT, SDValue V1,
+                                                SDValue V2, ArrayRef<int> Mask,
+                                                SelectionDAG &DAG) {
+  assert(!isSingleInputShuffleMask(Mask) && "This routine must not be used to "
+                                            "lower single-input shuffles as it "
+                                            "could then recurse on itself.");
+  int Size = Mask.size();
+
+  // If this can be modeled as a broadcast of two elements followed by a blend,
+  // prefer that lowering. This is especially important because broadcasts can
+  // often fold with memory operands.
+  auto DoBothBroadcast = [&] {
+    int V1BroadcastIdx = -1, V2BroadcastIdx = -1;
+    for (int M : Mask)
+      if (M >= Size) {
+        if (V2BroadcastIdx == -1)
+          V2BroadcastIdx = M - Size;
+        else if (M - Size != V2BroadcastIdx)
+          return false;
+      } else if (M >= 0) {
+        if (V1BroadcastIdx == -1)
+          V1BroadcastIdx = M;
+        else if (M != V1BroadcastIdx)
+          return false;
+      }
+    return true;
+  };
+  if (DoBothBroadcast())
+    return lowerVectorShuffleAsDecomposedShuffleBlend(DL, VT, V1, V2, Mask,
+                                                      DAG);
+
+  // If the inputs all stem from a single 128-bit lane of each input, then we
+  // split them rather than blending because the split will decompose to
+  // unusually few instructions.
+  int LaneCount = VT.getSizeInBits() / 128;
+  int LaneSize = Size / LaneCount;
+  SmallBitVector LaneInputs[2];
+  LaneInputs[0].resize(LaneCount, false);
+  LaneInputs[1].resize(LaneCount, false);
+  for (int i = 0; i < Size; ++i)
+    if (Mask[i] >= 0)
+      LaneInputs[Mask[i] / Size][(Mask[i] % Size) / LaneSize] = true;
+  if (LaneInputs[0].count() <= 1 && LaneInputs[1].count() <= 1)
+    return splitAndLowerVectorShuffle(DL, VT, V1, V2, Mask, DAG);
+
+  // Otherwise, just fall back to decomposed shuffles and a blend. This requires
+  // that the decomposed single-input shuffles don't end up here.
+  return lowerVectorShuffleAsDecomposedShuffleBlend(DL, VT, V1, V2, Mask, DAG);
 }
 
 /// \brief Lower a vector shuffle crossing multiple 128-bit lanes as
@@ -9810,9 +9899,14 @@ static SDValue lowerV4F64VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
                        DAG.getConstant(SHUFPDMask, MVT::i8));
   }
 
-  // Otherwise fall back on generic blend lowering.
-  return lowerVectorShuffleAsDecomposedShuffleBlend(DL, MVT::v4f64, V1, V2,
-                                                    Mask, DAG);
+  // If we have AVX2 then we always want to lower with a blend because an v4 we
+  // can fully permute the elements.
+  if (Subtarget->hasAVX2())
+    return lowerVectorShuffleAsDecomposedShuffleBlend(DL, MVT::v4f64, V1, V2,
+                                                      Mask, DAG);
+
+  // Otherwise fall back on generic lowering.
+  return lowerVectorShuffleAsSplitOrBlend(DL, MVT::v4f64, V1, V2, Mask, DAG);
 }
 
 /// \brief Handle lowering of 4-lane 64-bit integer shuffles.
@@ -9952,9 +10046,14 @@ static SDValue lowerV8F32VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
                                                    DAG);
   }
 
-  // Otherwise fall back on generic blend lowering.
-  return lowerVectorShuffleAsDecomposedShuffleBlend(DL, MVT::v8f32, V1, V2,
-                                                    Mask, DAG);
+  // If we have AVX2 then we always want to lower with a blend because at v8 we
+  // can fully permute the elements.
+  if (Subtarget->hasAVX2())
+    return lowerVectorShuffleAsDecomposedShuffleBlend(DL, MVT::v8f32, V1, V2,
+                                                      Mask, DAG);
+
+  // Otherwise fall back on generic lowering.
+  return lowerVectorShuffleAsSplitOrBlend(DL, MVT::v8f32, V1, V2, Mask, DAG);
 }
 
 /// \brief Handle lowering of 8-lane 32-bit integer shuffles.
@@ -10080,9 +10179,8 @@ static SDValue lowerV16I16VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
             DAG.getNode(ISD::BUILD_VECTOR, DL, MVT::v32i8, PSHUFBMask)));
   }
 
-  // Otherwise fall back on generic blend lowering.
-  return lowerVectorShuffleAsDecomposedShuffleBlend(DL, MVT::v16i16, V1, V2,
-                                                    Mask, DAG);
+  // Otherwise fall back on generic lowering.
+  return lowerVectorShuffleAsSplitOrBlend(DL, MVT::v16i16, V1, V2, Mask, DAG);
 }
 
 /// \brief Handle lowering of 32-lane 8-bit integer shuffles.
@@ -10146,9 +10244,8 @@ static SDValue lowerV32I8VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
         DAG.getNode(ISD::BUILD_VECTOR, DL, MVT::v32i8, PSHUFBMask));
   }
 
-  // Otherwise fall back on generic blend lowering.
-  return lowerVectorShuffleAsDecomposedShuffleBlend(DL, MVT::v32i8, V1, V2,
-                                                    Mask, DAG);
+  // Otherwise fall back on generic lowering.
+  return lowerVectorShuffleAsSplitOrBlend(DL, MVT::v32i8, V1, V2, Mask, DAG);
 }
 
 /// \brief High-level routine to lower various 256-bit x86 vector shuffles.
@@ -13116,10 +13213,18 @@ static SDValue LowerShiftParts(SDValue Op, SelectionDAG &DAG) {
 SDValue X86TargetLowering::LowerSINT_TO_FP(SDValue Op,
                                            SelectionDAG &DAG) const {
   MVT SrcVT = Op.getOperand(0).getSimpleValueType();
+  SDLoc dl(Op);
 
-  if (SrcVT.isVector())
+  if (SrcVT.isVector()) {
+    if (SrcVT.getVectorElementType() == MVT::i1) {
+      MVT IntegerVT = MVT::getVectorVT(MVT::i32, SrcVT.getVectorNumElements());
+      return DAG.getNode(ISD::SINT_TO_FP, dl, Op.getValueType(),
+                         DAG.getNode(ISD::SIGN_EXTEND, dl, IntegerVT,
+                                     Op.getOperand(0)));
+    }
     return SDValue();
-
+  }
+  
   assert(SrcVT <= MVT::i64 && SrcVT >= MVT::i16 &&
          "Unknown SINT_TO_FP to lower!");
 
@@ -13132,7 +13237,6 @@ SDValue X86TargetLowering::LowerSINT_TO_FP(SDValue Op,
     return Op;
   }
 
-  SDLoc dl(Op);
   unsigned Size = SrcVT.getSizeInBits()/8;
   MachineFunction &MF = DAG.getMachineFunction();
   int SSFI = MF.getFrameInfo()->CreateStackObject(Size, Size, false);
@@ -14543,9 +14647,7 @@ SDValue X86TargetLowering::getRecipEstimate(SDValue Op,
   // along with FMA, this could be a throughput win.
   if ((Subtarget->hasSSE1() && (VT == MVT::f32 || VT == MVT::v4f32)) ||
       (Subtarget->hasAVX() && VT == MVT::v8f32)) {
-    // TODO: Expose this as a user-configurable parameter to allow for
-    // speed vs. accuracy flexibility.
-    RefinementSteps = 1;
+    RefinementSteps = ReciprocalEstimateRefinementSteps;
     return DCI.DAG.getNode(X86ISD::FRCP, SDLoc(Op), VT, Op);
   }
   return SDValue();
@@ -15364,8 +15466,11 @@ static SDValue LowerSIGN_EXTEND_AVX512(SDValue Op, const X86Subtarget *Subtarget
   if (NumElts != 8 && NumElts != 16)
     return SDValue();
 
-  if (VT.is512BitVector() && InVT.getVectorElementType() != MVT::i1)
+  if (VT.is512BitVector() && InVT.getVectorElementType() != MVT::i1) {
+    if (In.getOpcode() == X86ISD::VSEXT || In.getOpcode() == X86ISD::VZEXT)
+      return DAG.getNode(In.getOpcode(), dl, VT, In.getOperand(0));
     return DAG.getNode(X86ISD::VSEXT, dl, VT, In);
+  }
 
   const TargetLowering &TLI = DAG.getTargetLoweringInfo();
   assert (InVT.getVectorElementType() == MVT::i1 && "Unexpected vector type");
@@ -16472,6 +16577,10 @@ static SDValue LowerINTRINSIC_WO_CHAIN(SDValue Op, const X86Subtarget *Subtarget
     case VSHIFT:
       return getTargetVShiftNode(IntrData->Opc0, dl, Op.getSimpleValueType(),
                                  Op.getOperand(1), Op.getOperand(2), DAG);
+    case VSHIFT_MASK:
+      return getVectorMaskingNode(getTargetVShiftNode(IntrData->Opc0, dl, Op.getSimpleValueType(),
+                                                      Op.getOperand(1), Op.getOperand(2), DAG),
+                                  Op.getOperand(4), Op.getOperand(3), Subtarget, DAG);;
     default:
       break;
     }
