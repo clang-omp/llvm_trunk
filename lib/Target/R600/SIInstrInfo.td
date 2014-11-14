@@ -245,6 +245,7 @@ def MUBUFOffset : ComplexPattern<i64, 6, "SelectMUBUFOffset">;
 def MUBUFOffsetAtomic : ComplexPattern<i64, 4, "SelectMUBUFOffset">;
 
 def VOP3Mods0 : ComplexPattern<untyped, 4, "SelectVOP3Mods0">;
+def VOP3Mods0Clamp : ComplexPattern<untyped, 3, "SelectVOP3Mods0Clamp">;
 def VOP3Mods  : ComplexPattern<untyped, 2, "SelectVOP3Mods">;
 
 //===----------------------------------------------------------------------===//
@@ -339,6 +340,11 @@ class SOP2_32 <bits<7> op, string opName, list<dag> pattern> : SOP2 <
   opName#" $dst, $src0, $src1", pattern
 >;
 
+class SOP2_SELECT_32 <bits<7> op, string opName, list<dag> pattern> : SOP2 <
+  op, (outs SReg_32:$dst), (ins SSrc_32:$src0, SSrc_32:$src1, SCCReg:$scc),
+  opName#" $dst, $src0, $src1 [$scc]", pattern
+>;
+
 class SOP2_64 <bits<7> op, string opName, list<dag> pattern> : SOP2 <
   op, (outs SReg_64:$dst), (ins SSrc_64:$src0, SSrc_64:$src1),
   opName#" $dst, $src0, $src1", pattern
@@ -362,12 +368,12 @@ class SOPC_64<bits<7> op, string opName, PatLeaf cond = COND_NULL>
   : SOPC_Helper<op, SSrc_64, i64, opName, cond>;
 
 class SOPK_32 <bits<5> op, string opName, list<dag> pattern> : SOPK <
-  op, (outs SReg_32:$dst), (ins i16imm:$src0),
+  op, (outs SReg_32:$dst), (ins u16imm:$src0),
   opName#" $dst, $src0", pattern
 >;
 
 class SOPK_64 <bits<5> op, string opName, list<dag> pattern> : SOPK <
-  op, (outs SReg_64:$dst), (ins i16imm:$src0),
+  op, (outs SReg_64:$dst), (ins u16imm:$src0),
   opName#" $dst, $src0", pattern
 >;
 

@@ -33,7 +33,15 @@ def isCI : Predicate<"Subtarget.getGeneration() "
                       ">= AMDGPUSubtarget::SEA_ISLANDS">;
 def HasFlatAddressSpace : Predicate<"Subtarget.hasFlatAddressSpace()">;
 
-def WAIT_FLAG : InstFlag<"printWaitFlag">;
+def SWaitMatchClass : AsmOperandClass {
+  let Name = "SWaitCnt";
+  let RenderMethod = "addImmOperands";
+  let ParserMethod = "parseSWaitCntOps";
+}
+
+def WAIT_FLAG : InstFlag<"printWaitFlag"> {
+  let ParserMatchClass = SWaitMatchClass;
+}
 
 let SubtargetPredicate = isSI in {
 
@@ -214,9 +222,8 @@ def S_MAX_U32 : SOP2_32 <0x00000009, "s_max_u32",
   [(set i32:$dst, (AMDGPUumax i32:$src0, i32:$src1))]
 >;
 
-def S_CSELECT_B32 : SOP2 <
-  0x0000000a, (outs SReg_32:$dst),
-  (ins SReg_32:$src0, SReg_32:$src1, SCCReg:$scc), "s_cselect_b32",
+def S_CSELECT_B32 : SOP2_SELECT_32 <
+  0x0000000a, "s_cselect_b32",
   []
 >;
 
@@ -372,7 +379,7 @@ def S_GETREG_REGRD_B32 : SOPK_32 <0x00000014, "s_getreg_regrd_b32", []>;
 // SOPP Instructions
 //===----------------------------------------------------------------------===//
 
-def S_NOP : SOPP <0x00000000, (ins i16imm:$simm16), "s_nop $simm16", []>;
+def S_NOP : SOPP <0x00000000, (ins i16imm:$simm16), "s_nop $simm16">;
 
 let isTerminator = 1 in {
 
@@ -393,36 +400,31 @@ def S_BRANCH : SOPP <
 let DisableEncoding = "$scc" in {
 def S_CBRANCH_SCC0 : SOPP <
   0x00000004, (ins sopp_brtarget:$simm16, SCCReg:$scc),
-  "s_cbranch_scc0 $simm16", []
+  "s_cbranch_scc0 $simm16"
 >;
 def S_CBRANCH_SCC1 : SOPP <
   0x00000005, (ins sopp_brtarget:$simm16, SCCReg:$scc),
-  "s_cbranch_scc1 $simm16",
-  []
+  "s_cbranch_scc1 $simm16"
 >;
 } // End DisableEncoding = "$scc"
 
 def S_CBRANCH_VCCZ : SOPP <
   0x00000006, (ins sopp_brtarget:$simm16, VCCReg:$vcc),
-  "s_cbranch_vccz $simm16",
-  []
+  "s_cbranch_vccz $simm16"
 >;
 def S_CBRANCH_VCCNZ : SOPP <
   0x00000007, (ins sopp_brtarget:$simm16, VCCReg:$vcc),
-  "s_cbranch_vccnz $simm16",
-  []
+  "s_cbranch_vccnz $simm16"
 >;
 
 let DisableEncoding = "$exec" in {
 def S_CBRANCH_EXECZ : SOPP <
   0x00000008, (ins sopp_brtarget:$simm16, EXECReg:$exec),
-  "s_cbranch_execz $simm16",
-  []
+  "s_cbranch_execz $simm16"
 >;
 def S_CBRANCH_EXECNZ : SOPP <
   0x00000009, (ins sopp_brtarget:$simm16, EXECReg:$exec),
-  "s_cbranch_execnz $simm16",
-  []
+  "s_cbranch_execnz $simm16"
 >;
 } // End DisableEncoding = "$exec"
 
@@ -441,12 +443,10 @@ def S_BARRIER : SOPP <0x0000000a, (ins), "s_barrier",
   let mayStore = 1;
 }
 
-def S_WAITCNT : SOPP <0x0000000c, (ins WAIT_FLAG:$simm16), "s_waitcnt $simm16",
-  []
->;
-//def S_SETHALT : SOPP_ <0x0000000d, "s_sethalt", []>;
-//def S_SLEEP : SOPP_ <0x0000000e, "s_sleep", []>;
-//def S_SETPRIO : SOPP_ <0x0000000f, "s_setprio", []>;
+def S_WAITCNT : SOPP <0x0000000c, (ins WAIT_FLAG:$simm16), "s_waitcnt $simm16">;
+def S_SETHALT : SOPP <0x0000000d, (ins i16imm:$simm16), "s_sethalt $simm16">;
+def S_SLEEP : SOPP <0x0000000e, (ins i16imm:$simm16), "s_sleep $simm16">;
+def S_SETPRIO : SOPP <0x0000000f, (ins i16imm:$sim16), "s_setprio $sim16">;
 
 let Uses = [EXEC] in {
   def S_SENDMSG : SOPP <0x00000010, (ins SendMsgImm:$simm16, M0Reg:$m0), "s_sendmsg $simm16",
@@ -456,12 +456,16 @@ let Uses = [EXEC] in {
   }
 } // End Uses = [EXEC]
 
-//def S_SENDMSGHALT : SOPP_ <0x00000011, "s_sendmsghalt", []>;
-//def S_TRAP : SOPP_ <0x00000012, "s_trap", []>;
-//def S_ICACHE_INV : SOPP_ <0x00000013, "s_icache_inv", []>;
-//def S_INCPERFLEVEL : SOPP_ <0x00000014, "s_incperflevel", []>;
-//def S_DECPERFLEVEL : SOPP_ <0x00000015, "s_decperflevel", []>;
-//def S_TTRACEDATA : SOPP_ <0x00000016, "s_ttracedata", []>;
+def S_SENDMSGHALT : SOPP <0x00000011, (ins i16imm:$simm16), "s_sendmsghalt $simm16">;
+def S_TRAP : SOPP <0x00000012, (ins i16imm:$simm16), "s_trap $simm16">;
+def S_ICACHE_INV : SOPP <0x00000013, (ins), "s_icache_inv"> {
+	let simm16 = 0;
+}
+def S_INCPERFLEVEL : SOPP <0x00000014, (ins i16imm:$simm16), "s_incperflevel $simm16">;
+def S_DECPERFLEVEL : SOPP <0x00000015, (ins i16imm:$simm16), "s_decperflevel $simm16">;
+def S_TTRACEDATA : SOPP <0x00000016, (ins), "s_ttracedata"> {
+  let simm16 = 0;
+}
 } // End hasSideEffects
 
 //===----------------------------------------------------------------------===//
@@ -1374,11 +1378,11 @@ defm V_SUBREV_F32 : VOP2Inst <vop2<0x5>, "v_subrev_f32",
 >;
 } // End isCommutable = 1
 
+let isCommutable = 1 in {
+
 defm V_MAC_LEGACY_F32 : VOP2Inst <vop2<0x6>, "v_mac_legacy_f32",
   VOP_F32_F32_F32
 >;
-
-let isCommutable = 1 in {
 
 defm V_MUL_LEGACY_F32 : VOP2Inst <vop2<0x7>, "v_mul_legacy_f32",
   VOP_F32_F32_F32, int_AMDGPU_mul
@@ -1387,7 +1391,6 @@ defm V_MUL_LEGACY_F32 : VOP2Inst <vop2<0x7>, "v_mul_legacy_f32",
 defm V_MUL_F32 : VOP2Inst <vop2<0x8>, "v_mul_f32",
   VOP_F32_F32_F32, fmul
 >;
-
 
 defm V_MUL_I32_I24 : VOP2Inst <vop2<0x9>, "v_mul_i32_i24",
   VOP_I32_I32_I32, AMDGPUmul_i24
@@ -1400,11 +1403,11 @@ defm V_MUL_U32_U24 : VOP2Inst <vop2<0xb>, "v_mul_u32_u24",
 
 
 defm V_MIN_LEGACY_F32 : VOP2Inst <vop2<0xd>, "v_min_legacy_f32",
-  VOP_F32_F32_F32, AMDGPUfmin
+  VOP_F32_F32_F32, AMDGPUfmin_legacy
 >;
 
 defm V_MAX_LEGACY_F32 : VOP2Inst <vop2<0xe>, "v_max_legacy_f32",
-  VOP_F32_F32_F32, AMDGPUfmax
+  VOP_F32_F32_F32, AMDGPUfmax_legacy
 >;
 
 defm V_MIN_F32 : VOP2Inst <vop2<0xf>, "v_min_f32", VOP_F32_F32_F32, fminnum>;
@@ -1449,11 +1452,21 @@ defm V_XOR_B32 : VOP2Inst <vop2<0x1d>, "v_xor_b32",
 
 defm V_BFM_B32 : VOP2Inst <vop2<0x1e>, "v_bfm_b32",
   VOP_I32_I32_I32, AMDGPUbfm>;
+
+let isCommutable = 1 in {
 defm V_MAC_F32 : VOP2Inst <vop2<0x1f>, "v_mac_f32", VOP_F32_F32_F32>;
+} // End isCommutable = 1
+
 defm V_MADMK_F32 : VOP2Inst <vop2<0x20>, "v_madmk_f32", VOP_F32_F32_F32>;
+
+let isCommutable = 1 in {
 defm V_MADAK_F32 : VOP2Inst <vop2<0x21>, "v_madak_f32", VOP_F32_F32_F32>;
+} // End isCommutable = 1
+
+
 defm V_BCNT_U32_B32 : VOP2Inst <vop2<0x22>, "v_bcnt_u32_b32", VOP_I32_I32_I32>;
 defm V_MBCNT_LO_U32_B32 : VOP2Inst <vop2<0x23>, "v_mbcnt_lo_u32_b32",
+
   VOP_I32_I32_I32
 >;
 defm V_MBCNT_HI_U32_B32 : VOP2Inst <vop2<0x24>, "v_mbcnt_hi_u32_b32",
@@ -1503,18 +1516,22 @@ defm V_CVT_PKRTZ_F16_F32 : VOP2Inst <vop2<0x2f>, "v_cvt_pkrtz_f16_f32",
 // VOP3 Instructions
 //===----------------------------------------------------------------------===//
 
+let isCommutable = 1 in {
 defm V_MAD_LEGACY_F32 : VOP3Inst <vop3<0x140>, "v_mad_legacy_f32",
   VOP_F32_F32_F32_F32
 >;
+
 defm V_MAD_F32 : VOP3Inst <vop3<0x141>, "v_mad_f32",
   VOP_F32_F32_F32_F32, fmad
 >;
+
 defm V_MAD_I32_I24 : VOP3Inst <vop3<0x142>, "v_mad_i32_i24",
   VOP_I32_I32_I32_I32, AMDGPUmad_i24
 >;
 defm V_MAD_U32_U24 : VOP3Inst <vop3<0x143>, "v_mad_u32_u24",
   VOP_I32_I32_I32_I32, AMDGPUmad_u24
 >;
+} // End isCommutable = 1
 
 defm V_CUBEID_F32 : VOP3Inst <vop3<0x144>, "v_cubeid_f32",
   VOP_F32_F32_F32_F32
@@ -1537,12 +1554,16 @@ defm V_BFE_I32 : VOP3Inst <vop3<0x149>, "v_bfe_i32",
 defm V_BFI_B32 : VOP3Inst <vop3<0x14a>, "v_bfi_b32",
   VOP_I32_I32_I32_I32, AMDGPUbfi
 >;
+
+let isCommutable = 1 in {
 defm V_FMA_F32 : VOP3Inst <vop3<0x14b>, "v_fma_f32",
   VOP_F32_F32_F32_F32, fma
 >;
 defm V_FMA_F64 : VOP3Inst <vop3<0x14c>, "v_fma_f64",
   VOP_F64_F64_F64_F64, fma
 >;
+} // End isCommutable = 1
+
 //def V_LERP_U8 : VOP3_U8 <0x0000014d, "v_lerp_u8", []>;
 defm V_ALIGNBIT_B32 : VOP3Inst <vop3<0x14e>, "v_alignbit_b32",
   VOP_I32_I32_I32_I32
@@ -1629,15 +1650,19 @@ defm V_DIV_SCALE_F32 : VOP3b_32 <vop3<0x16d>, "v_div_scale_f32", []>;
 // Double precision division pre-scale.
 defm V_DIV_SCALE_F64 : VOP3b_64 <vop3<0x16e>, "v_div_scale_f64", []>;
 
+let isCommutable = 1 in {
 defm V_DIV_FMAS_F32 : VOP3Inst <vop3<0x16f>, "v_div_fmas_f32",
   VOP_F32_F32_F32_F32, AMDGPUdiv_fmas
 >;
 defm V_DIV_FMAS_F64 : VOP3Inst <vop3<0x170>, "v_div_fmas_f64",
   VOP_F64_F64_F64_F64, AMDGPUdiv_fmas
 >;
+} // End isCommutable = 1
+
 //def V_MSAD_U8 : VOP3_U8 <0x00000171, "v_msad_u8", []>;
 //def V_QSAD_U8 : VOP3_U8 <0x00000172, "v_qsad_u8", []>;
 //def V_MQSAD_U8 : VOP3_U8 <0x00000173, "v_mqsad_u8", []>;
+
 defm V_TRIG_PREOP_F64 : VOP3Inst <
   vop3<0x174>, "v_trig_preop_f64", VOP_F64_F64_I32, AMDGPUtrig_preop
 >;
@@ -2366,18 +2391,10 @@ def : BitConvert <v16f32, v16i32, VReg_512>;
 /********** Src & Dst modifiers **********/
 /********** =================== **********/
 
-def FCLAMP_SI : AMDGPUShaderInst <
-  (outs VReg_32:$dst),
-  (ins VSrc_32:$src0),
-  "fclamp_si $dst, $src0",
-  []
-> {
-  let usesCustomInserter = 1;
-}
-
 def : Pat <
-  (AMDGPUclamp f32:$src, (f32 FP_ZERO), (f32 FP_ONE)),
-  (FCLAMP_SI f32:$src)
+  (AMDGPUclamp (VOP3Mods0Clamp f32:$src0, i32:$src0_modifiers, i32:$omod),
+               (f32 FP_ZERO), (f32 FP_ONE)),
+  (V_ADD_F32_e64 $src0_modifiers, $src0, 0, 0, 1, $omod)
 >;
 
 /********** ================================ **********/
@@ -2840,6 +2857,8 @@ defm V_MQSAD_U16_U8 : VOP3Inst <vop3<0x172>, "v_mqsad_u16_u8",
 defm V_MQSAD_U32_U8 : VOP3Inst <vop3<0x175>, "v_mqsad_u32_u8",
   VOP_I32_I32_I32
 >;
+
+let isCommutable = 1 in {
 defm V_MAD_U64_U32 : VOP3Inst <vop3<0x176>, "v_mad_u64_u32",
   VOP_I64_I32_I32_I64
 >;
@@ -2848,6 +2867,7 @@ defm V_MAD_U64_U32 : VOP3Inst <vop3<0x176>, "v_mad_u64_u32",
 defm V_MAD_I64_I32 : VOP3Inst <vop3<0x177>, "v_mad_i64_i32",
   VOP_I64_I32_I32_I64
 >;
+} // End isCommutable = 1
 
 // Remaining instructions:
 // FLAT_*

@@ -674,8 +674,9 @@ def ADD : R600_2OP_Helper <0x0, "ADD", fadd>;
 // Non-IEEE MUL: 0 * anything = 0
 def MUL : R600_2OP_Helper <0x1, "MUL NON-IEEE", int_AMDGPU_mul>;
 def MUL_IEEE : R600_2OP_Helper <0x2, "MUL_IEEE", fmul>;
-def MAX : R600_2OP_Helper <0x3, "MAX", AMDGPUfmax>;
-def MIN : R600_2OP_Helper <0x4, "MIN", AMDGPUfmin>;
+// TODO: Do these actually match the regular fmin/fmax behavior?
+def MAX : R600_2OP_Helper <0x3, "MAX", AMDGPUfmax_legacy>;
+def MIN : R600_2OP_Helper <0x4, "MIN", AMDGPUfmin_legacy>;
 
 // For the SET* instructions there is a naming conflict in TargetSelectionDAG.td,
 // so some of the instruction names don't match the asm string.
@@ -1495,6 +1496,7 @@ class ILFormat<dag outs, dag ins, string asmstr, list<dag> pattern>
      let mayLoad = 0;
      let mayStore = 0;
      let hasSideEffects = 0;
+     let isCodeGenOnly = 1;
 }
 
 multiclass BranchConditional<SDNode Op, RegisterClass rci, RegisterClass rcf> {
