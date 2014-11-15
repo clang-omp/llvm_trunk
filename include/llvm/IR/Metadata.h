@@ -41,11 +41,11 @@ enum LLVMConstants : uint32_t {
 /// TODO: Detach from the Value hierarchy.
 class Metadata : public Value {
 protected:
-  Metadata(Type *Type, unsigned ID) : Value(Type, ID) {}
+  Metadata(LLVMContext &Context, unsigned ID);
 
 public:
   static bool classof(const Value *V) {
-    return V->getValueID() == MDNodeVal;
+    return V->getValueID() == MDNodeVal || V->getValueID() == MDStringVal;
   }
 };
 
@@ -54,15 +54,14 @@ public:
 ///
 /// These are used to efficiently contain a byte sequence for metadata.
 /// MDString is always unnamed.
-///
-/// TODO: Inherit from Metadata.
-class MDString : public Value {
+class MDString : public Metadata {
   friend class StringMapEntry<MDString>;
 
   virtual void anchor();
   MDString(const MDString &) LLVM_DELETED_FUNCTION;
 
-  explicit MDString(LLVMContext &C);
+  explicit MDString(LLVMContext &Context)
+      : Metadata(Context, Value::MDStringVal) {}
 
   /// \brief Shadow Value::getName() to prevent its use.
   StringRef getName() const LLVM_DELETED_FUNCTION;

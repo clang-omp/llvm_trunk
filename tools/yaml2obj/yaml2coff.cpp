@@ -144,11 +144,16 @@ struct COFFParser {
 static bool layoutOptionalHeader(COFFParser &CP) {
   if (!CP.isPE())
     return true;
+  unsigned PEHeaderSize = CP.is64Bit() ? sizeof(object::pe32plus_header)
+                                       : sizeof(object::pe32_header);
   CP.Obj.Header.SizeOfOptionalHeader =
-      (CP.is64Bit() ? sizeof(object::pe32plus_header)
-                    : sizeof(object::pe32_header)) +
-      (sizeof(object::data_directory) * (COFF::NUM_DATA_DIRECTORIES + 1));
+      PEHeaderSize +
+      sizeof(object::data_directory) * (COFF::NUM_DATA_DIRECTORIES + 1);
   return true;
+}
+
+namespace {
+enum { DOSStubSize = 128 };
 }
 
 // Take a CP and assign addresses and sizes to everything. Returns false if the
@@ -158,6 +163,8 @@ static bool layoutCOFF(COFFParser &CP) {
   // optional header.
   CP.SectionTableStart =
       CP.getHeaderSize() + CP.Obj.Header.SizeOfOptionalHeader;
+  if (CP.isPE())
+    CP.SectionTableStart += DOSStubSize + sizeof(COFF::PEMagic);
   CP.SectionTableSize = COFF::SectionSize * CP.Obj.Sections.size();
 
   uint32_t CurrentSectionDataOffset =
@@ -281,15 +288,18 @@ num_zeros_impl num_zeros(size_t N) {
 }
 
 template <typename T>
-static void initializeOptionalHeader(COFFParser &CP, uint16_t Magic, T Header) {
+static uint32_t initializeOptionalHeader(COFFParser &CP, uint16_t Magic, T Header) {
   memset(Header, 0, sizeof(*Header));
   Header->Magic = Magic;
   Header->SectionAlignment = CP.Obj.OptionalHeader->Header.SectionAlignment;
+  Header->FileAlignment = CP.Obj.OptionalHeader->Header.FileAlignment;
   uint32_t SizeOfCode = 0, SizeOfInitializedData = 0,
            SizeOfUninitializedData = 0;
   uint32_t SizeOfHeaders = RoundUpToAlignment(
-      CP.SectionTableStart + CP.SectionTableSize, Header->SectionAlignment);
-  uint32_t SizeOfImage = SizeOfHeaders;
+      CP.SectionTableStart + CP.SectionTableSize, Header->FileAlignment);
+  uint32_t SizeOfImage =
+      RoundUpToAlignment(SizeOfHeaders, Header->SectionAlignment);
+  uint32_t BaseOfData = 0;
   for (const COFFYAML::Section &S : CP.Obj.Sections) {
     if (S.Header.Characteristics & COFF::IMAGE_SCN_CNT_CODE)
       SizeOfCode += S.Header.SizeOfRawData;
@@ -298,7 +308,9 @@ static void initializeOptionalHeader(COFFParser &CP, uint16_t Magic, T Header) {
     if (S.Header.Characteristics & COFF::IMAGE_SCN_CNT_UNINITIALIZED_DATA)
       SizeOfUninitializedData += S.Header.SizeOfRawData;
     if (S.Name.equals(".text"))
-      Header->BaseOfCode = S.Header.VirtualAddress;          // RVA
+      Header->BaseOfCode = S.Header.VirtualAddress; // RVA
+    else if (S.Name.equals(".data"))
+      BaseOfData = S.Header.VirtualAddress; // RVA
     if (S.Header.VirtualAddress)
       SizeOfImage +=
           RoundUpToAlignment(S.Header.VirtualSize, Header->SectionAlignment);
@@ -309,7 +321,6 @@ static void initializeOptionalHeader(COFFParser &CP, uint16_t Magic, T Header) {
   Header->AddressOfEntryPoint =
       CP.Obj.OptionalHeader->Header.AddressOfEntryPoint; // RVA
   Header->ImageBase = CP.Obj.OptionalHeader->Header.ImageBase;
-  Header->FileAlignment = CP.Obj.OptionalHeader->Header.FileAlignment;
   Header->MajorOperatingSystemVersion =
       CP.Obj.OptionalHeader->Header.MajorOperatingSystemVersion;
   Header->MinorOperatingSystemVersion =
@@ -331,6 +342,7 @@ static void initializeOptionalHeader(COFFParser &CP, uint16_t Magic, T Header) {
   Header->SizeOfHeapReserve = CP.Obj.OptionalHeader->Header.SizeOfHeapReserve;
   Header->SizeOfHeapCommit = CP.Obj.OptionalHeader->Header.SizeOfHeapCommit;
   Header->NumberOfRvaAndSize = COFF::NUM_DATA_DIRECTORIES + 1;
+  return BaseOfData;
 }
 
 static bool writeCOFF(COFFParser &CP, raw_ostream &OS) {
@@ -347,13 +359,13 @@ static bool writeCOFF(COFFParser &CP, raw_ostream &OS) {
     // 0x40.
     DH.AddressOfRelocationTable = sizeof(DH);
     // This is the address of the PE signature.
-    DH.AddressOfNewExeHeader = 128;
+    DH.AddressOfNewExeHeader = DOSStubSize;
 
     // Write out our DOS stub.
     OS.write(reinterpret_cast<char *>(&DH), sizeof(DH));
     // Write padding until we reach the position of where our PE signature
     // should live.
-    OS << num_zeros(DH.AddressOfNewExeHeader - sizeof(DH));
+    OS << num_zeros(DOSStubSize - sizeof(DH));
     // Write out the PE signature.
     OS.write(COFF::PEMagic, sizeof(COFF::PEMagic));
   }
@@ -387,7 +399,8 @@ static bool writeCOFF(COFFParser &CP, raw_ostream &OS) {
       OS.write(reinterpret_cast<char *>(&PEH), sizeof(PEH));
     } else {
       object::pe32_header PEH;
-      initializeOptionalHeader(CP, COFF::PE32Header::PE32, &PEH);
+      uint32_t BaseOfData = initializeOptionalHeader(CP, COFF::PE32Header::PE32, &PEH);
+      PEH.BaseOfData = BaseOfData;
       OS.write(reinterpret_cast<char *>(&PEH), sizeof(PEH));
     }
     for (const Optional<COFF::DataDirectory> &DD :
@@ -404,6 +417,7 @@ static bool writeCOFF(COFFParser &CP, raw_ostream &OS) {
     OS << zeros(uint32_t(0));
   }
 
+  assert(OS.tell() == CP.SectionTableStart);
   // Output section table.
   for (std::vector<COFFYAML::Section>::iterator i = CP.Obj.Sections.begin(),
                                                 e = CP.Obj.Sections.end();
@@ -419,6 +433,7 @@ static bool writeCOFF(COFFParser &CP, raw_ostream &OS) {
        << binary_le(i->Header.NumberOfLineNumbers)
        << binary_le(i->Header.Characteristics);
   }
+  assert(OS.tell() == CP.SectionTableStart + CP.SectionTableSize);
 
   unsigned CurSymbol = 0;
   StringMap<unsigned> SymbolTableIndexMap;
@@ -433,8 +448,10 @@ static bool writeCOFF(COFFParser &CP, raw_ostream &OS) {
   for (const COFFYAML::Section &S : CP.Obj.Sections) {
     if (!S.Header.SizeOfRawData)
       continue;
+    assert(S.Header.PointerToRawData >= OS.tell());
     OS << num_zeros(S.Header.PointerToRawData - OS.tell());
     S.SectionData.writeAsBinary(OS);
+    assert(S.Header.SizeOfRawData >= S.SectionData.binary_size());
     OS << num_zeros(S.Header.SizeOfRawData - S.SectionData.binary_size());
     for (const COFFYAML::Relocation &R : S.Relocations) {
       uint32_t SymbolTableIndex = SymbolTableIndexMap[R.SymbolName];
