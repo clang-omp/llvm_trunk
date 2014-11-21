@@ -3886,7 +3886,7 @@ unsigned AArch64FastISel::emitLSL_rr(MVT RetVT, unsigned Op0Reg, bool Op0IsKill,
 
 unsigned AArch64FastISel::emitLSL_ri(MVT RetVT, MVT SrcVT, unsigned Op0,
                                      bool Op0IsKill, uint64_t Shift,
-                                     bool IsZext) {
+                                     bool IsZExt) {
   assert(RetVT.SimpleTy >= SrcVT.SimpleTy &&
          "Unexpected source/return type pair.");
   assert((SrcVT == MVT::i1 || SrcVT == MVT::i8 || SrcVT == MVT::i16 ||
@@ -3899,6 +3899,20 @@ unsigned AArch64FastISel::emitLSL_ri(MVT RetVT, MVT SrcVT, unsigned Op0,
   unsigned RegSize = Is64Bit ? 64 : 32;
   unsigned DstBits = RetVT.getSizeInBits();
   unsigned SrcBits = SrcVT.getSizeInBits();
+  const TargetRegisterClass *RC =
+      Is64Bit ? &AArch64::GPR64RegClass : &AArch64::GPR32RegClass;
+
+  // Just emit a copy for "zero" shifts.
+  if (Shift == 0) {
+    if (RetVT == SrcVT) {
+      unsigned ResultReg = createResultReg(RC);
+      BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
+              TII.get(TargetOpcode::COPY), ResultReg)
+          .addReg(Op0, getKillRegState(Op0IsKill));
+      return ResultReg;
+    } else
+      return emitIntExt(SrcVT, Op0, RetVT, IsZExt);
+  }
 
   // Don't deal with undefined shifts.
   if (Shift >= DstBits)
@@ -3936,9 +3950,7 @@ unsigned AArch64FastISel::emitLSL_ri(MVT RetVT, MVT SrcVT, unsigned Op0,
     {AArch64::SBFMWri, AArch64::SBFMXri},
     {AArch64::UBFMWri, AArch64::UBFMXri}
   };
-  unsigned Opc = OpcTable[IsZext][Is64Bit];
-  const TargetRegisterClass *RC =
-      Is64Bit ? &AArch64::GPR64RegClass : &AArch64::GPR32RegClass;
+  unsigned Opc = OpcTable[IsZExt][Is64Bit];
   if (SrcVT.SimpleTy <= MVT::i32 && RetVT == MVT::i64) {
     unsigned TmpReg = MRI.createVirtualRegister(RC);
     BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
@@ -3984,8 +3996,9 @@ unsigned AArch64FastISel::emitLSR_ri(MVT RetVT, MVT SrcVT, unsigned Op0,
                                      bool IsZExt) {
   assert(RetVT.SimpleTy >= SrcVT.SimpleTy &&
          "Unexpected source/return type pair.");
-  assert((SrcVT == MVT::i8 || SrcVT == MVT::i16 || SrcVT == MVT::i32 ||
-          SrcVT == MVT::i64) && "Unexpected source value type.");
+  assert((SrcVT == MVT::i1 || SrcVT == MVT::i8 || SrcVT == MVT::i16 ||
+          SrcVT == MVT::i32 || SrcVT == MVT::i64) &&
+         "Unexpected source value type.");
   assert((RetVT == MVT::i8 || RetVT == MVT::i16 || RetVT == MVT::i32 ||
           RetVT == MVT::i64) && "Unexpected return value type.");
 
@@ -3993,6 +4006,20 @@ unsigned AArch64FastISel::emitLSR_ri(MVT RetVT, MVT SrcVT, unsigned Op0,
   unsigned RegSize = Is64Bit ? 64 : 32;
   unsigned DstBits = RetVT.getSizeInBits();
   unsigned SrcBits = SrcVT.getSizeInBits();
+  const TargetRegisterClass *RC =
+      Is64Bit ? &AArch64::GPR64RegClass : &AArch64::GPR32RegClass;
+
+  // Just emit a copy for "zero" shifts.
+  if (Shift == 0) {
+    if (RetVT == SrcVT) {
+      unsigned ResultReg = createResultReg(RC);
+      BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
+              TII.get(TargetOpcode::COPY), ResultReg)
+      .addReg(Op0, getKillRegState(Op0IsKill));
+      return ResultReg;
+    } else
+      return emitIntExt(SrcVT, Op0, RetVT, IsZExt);
+  }
 
   // Don't deal with undefined shifts.
   if (Shift >= DstBits)
@@ -4045,8 +4072,6 @@ unsigned AArch64FastISel::emitLSR_ri(MVT RetVT, MVT SrcVT, unsigned Op0,
     {AArch64::UBFMWri, AArch64::UBFMXri}
   };
   unsigned Opc = OpcTable[IsZExt][Is64Bit];
-  const TargetRegisterClass *RC =
-      Is64Bit ? &AArch64::GPR64RegClass : &AArch64::GPR32RegClass;
   if (SrcVT.SimpleTy <= MVT::i32 && RetVT == MVT::i64) {
     unsigned TmpReg = MRI.createVirtualRegister(RC);
     BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
@@ -4092,8 +4117,9 @@ unsigned AArch64FastISel::emitASR_ri(MVT RetVT, MVT SrcVT, unsigned Op0,
                                      bool IsZExt) {
   assert(RetVT.SimpleTy >= SrcVT.SimpleTy &&
          "Unexpected source/return type pair.");
-  assert((SrcVT == MVT::i8 || SrcVT == MVT::i16 || SrcVT == MVT::i32 ||
-          SrcVT == MVT::i64) && "Unexpected source value type.");
+  assert((SrcVT == MVT::i1 || SrcVT == MVT::i8 || SrcVT == MVT::i16 ||
+          SrcVT == MVT::i32 || SrcVT == MVT::i64) &&
+         "Unexpected source value type.");
   assert((RetVT == MVT::i8 || RetVT == MVT::i16 || RetVT == MVT::i32 ||
           RetVT == MVT::i64) && "Unexpected return value type.");
 
@@ -4101,6 +4127,20 @@ unsigned AArch64FastISel::emitASR_ri(MVT RetVT, MVT SrcVT, unsigned Op0,
   unsigned RegSize = Is64Bit ? 64 : 32;
   unsigned DstBits = RetVT.getSizeInBits();
   unsigned SrcBits = SrcVT.getSizeInBits();
+  const TargetRegisterClass *RC =
+      Is64Bit ? &AArch64::GPR64RegClass : &AArch64::GPR32RegClass;
+
+  // Just emit a copy for "zero" shifts.
+  if (Shift == 0) {
+    if (RetVT == SrcVT) {
+      unsigned ResultReg = createResultReg(RC);
+      BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
+              TII.get(TargetOpcode::COPY), ResultReg)
+      .addReg(Op0, getKillRegState(Op0IsKill));
+      return ResultReg;
+    } else
+      return emitIntExt(SrcVT, Op0, RetVT, IsZExt);
+  }
 
   // Don't deal with undefined shifts.
   if (Shift >= DstBits)
@@ -4141,8 +4181,6 @@ unsigned AArch64FastISel::emitASR_ri(MVT RetVT, MVT SrcVT, unsigned Op0,
     {AArch64::UBFMWri, AArch64::UBFMXri}
   };
   unsigned Opc = OpcTable[IsZExt][Is64Bit];
-  const TargetRegisterClass *RC =
-      Is64Bit ? &AArch64::GPR64RegClass : &AArch64::GPR32RegClass;
   if (SrcVT.SimpleTy <= MVT::i32 && RetVT == MVT::i64) {
     unsigned TmpReg = MRI.createVirtualRegister(RC);
     BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,

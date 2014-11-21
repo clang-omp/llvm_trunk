@@ -765,3 +765,55 @@ class COP0_TLB_FM_MM<bits<10> op> : MMArch {
   let Inst{15-6}  = op;
   let Inst{5-0}   = 0x3c;
 }
+
+class SDBBP_FM_MM : MMArch {
+  bits<10> code_;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = 0x0;
+  let Inst{25-16} = code_;
+  let Inst{15-6}  = 0x36d;
+  let Inst{5-0}   = 0x3c;
+}
+
+class RDHWR_FM_MM : MMArch {
+  bits<5> rt;
+  bits<5> rd;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = 0x0;
+  let Inst{25-21} = rt;
+  let Inst{20-16} = rd;
+  let Inst{15-6}  = 0x1ac;
+  let Inst{5-0}   = 0x3c;
+}
+
+class LWXS_FM_MM<bits<10> funct> {
+  bits<5> rd;
+  bits<5> base;
+  bits<5> index;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = 0x0;
+  let Inst{25-21} = index;
+  let Inst{20-16} = base;
+  let Inst{15-11} = rd;
+  let Inst{10}    = 0;
+  let Inst{9-0}   = funct;
+}
+
+class LWM_FM_MM<bits<4> funct> : MMArch {
+  bits<5> rt;
+  bits<21> addr;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = 0x8;
+  let Inst{25-21} = rt;
+  let Inst{20-16} = addr{20-16};
+  let Inst{15-12} = funct;
+  let Inst{11-0}  = addr{11-0};
+}

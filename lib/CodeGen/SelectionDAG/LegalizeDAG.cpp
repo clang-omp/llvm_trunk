@@ -1486,7 +1486,7 @@ SDValue SelectionDAGLegalize::ExpandInsertToVectorThroughStack(SDValue Op) {
                                     StackPtr);
 
   // Store the subvector.
-  Ch = DAG.getStore(DAG.getEntryNode(), dl, Part, SubStackPtr,
+  Ch = DAG.getStore(Ch, dl, Part, SubStackPtr,
                     MachinePointerInfo(), false, false, 0);
 
   // Finally, load the updated vector.
@@ -4343,7 +4343,7 @@ void SelectionDAG::Legalize() {
         continue;
       }
 
-      if (LegalizedNodes.insert(N)) {
+      if (LegalizedNodes.insert(N).second) {
         AnyLegalized = true;
         Legalizer.LegalizeOp(N);
 

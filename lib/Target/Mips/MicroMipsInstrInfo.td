@@ -31,6 +31,12 @@ def uimm4_andi : Operand<i32> {
   let EncoderMethod = "getUImm4AndValue";
 }
 
+def immSExtAddiur2 : ImmLeaf<i32, [{return Imm == 1 || Imm == -1 ||
+                                           ((Imm % 4 == 0) &&
+                                            Imm < 28 && Imm > 0);}]>;
+
+def immSExtAddius5 : ImmLeaf<i32, [{return Imm >= -8 && Imm <= 7;}]>;
+
 def immZExtAndi16 : ImmLeaf<i32,
   [{return (Imm == 128 || (Imm >= 1 && Imm <= 4) || Imm == 7 || Imm == 8 ||
             Imm == 15 || Imm == 16 || Imm == 31 || Imm == 32 || Imm == 63 ||
@@ -161,7 +167,6 @@ class AddImmUS5<string opstr, RegisterOperand RO> :
   MicroMipsInst16<(outs RO:$dst), (ins RO:$rd, simm4:$imm),
                   !strconcat(opstr, "\t$rd, $imm"), [], NoItinerary, FrmR> {
   let Constraints = "$rd = $dst";
-  let isCommutable = 1;
 }
 
 class AddImmUR1SP<string opstr, RegisterOperand RO> :
@@ -258,6 +263,41 @@ let isCall = 1, hasDelaySlot = 1, Defs = [RA] in {
                                   RegisterOperand RO> :
     InstSE<(outs), (ins RO:$rs, opnd:$offset),
            !strconcat(opstr, "\t$rs, $offset"), [], IIBranch, FrmI, opstr>;
+}
+
+class LoadWordIndexedScaledMM<string opstr, RegisterOperand RO,
+                              InstrItinClass Itin = NoItinerary,
+                              SDPatternOperator OpNode = null_frag> :
+  InstSE<(outs RO:$rd), (ins PtrRC:$base, PtrRC:$index),
+         !strconcat(opstr, "\t$rd, ${index}(${base})"), [], Itin, FrmFI>;
+
+/// A list of registers used by load/store multiple instructions.
+def RegListAsmOperand : AsmOperandClass {
+  let Name = "RegList";
+  let ParserMethod = "parseRegisterList";
+}
+
+def reglist : Operand<i32> {
+  let EncoderMethod = "getRegisterListOpValue";
+  let ParserMatchClass = RegListAsmOperand;
+  let PrintMethod = "printRegisterList";
+  let DecoderMethod = "DecodeRegListOperand";
+}
+
+class StoreMultMM<string opstr,
+            InstrItinClass Itin = NoItinerary, ComplexPattern Addr = addr> :
+  InstSE<(outs), (ins reglist:$rt, mem_mm_12:$addr),
+         !strconcat(opstr, "\t$rt, $addr"), [], Itin, FrmI, opstr> {
+  let DecoderMethod = "DecodeMemMMImm12";
+  let mayStore = 1;
+}
+
+class LoadMultMM<string opstr,
+            InstrItinClass Itin = NoItinerary, ComplexPattern Addr = addr> :
+  InstSE<(outs reglist:$rt), (ins mem_mm_12:$addr),
+          !strconcat(opstr, "\t$rt, $addr"), [], Itin, FrmI, opstr> {
+  let DecoderMethod = "DecodeMemMMImm12";
+  let mayLoad = 1;
 }
 
 def ADDU16_MM : ArithRMM16<"addu16", GPRMM16Opnd, 1, II_ADDU, add>,
@@ -377,6 +417,8 @@ let DecoderNamespace = "MicroMips", Predicates = [InMicroMips] in {
     def SW_MM  : Store<"sw", GPR32Opnd>, MMRel, LW_FM_MM<0x3e>;
   }
 
+  def LWXS_MM : LoadWordIndexedScaledMM<"lwxs", GPR32Opnd>, LWXS_FM_MM<0x118>;
+
   def LWU_MM : LoadMM<"lwu", GPR32Opnd, zextloadi32, II_LWU>, LL_FM_MM<0xe>;
 
   /// Load and Store Instructions - unaligned
@@ -388,6 +430,10 @@ let DecoderNamespace = "MicroMips", Predicates = [InMicroMips] in {
                LWL_FM_MM<0x8>;
   def SWR_MM : StoreLeftRightMM<"swr", MipsSWR, GPR32Opnd, mem_mm_12>,
                LWL_FM_MM<0x9>;
+
+  /// Load and Store Instructions - multiple
+  def SWM32_MM  : StoreMultMM<"swm32">, LWM_FM_MM<0xd>;
+  def LWM32_MM  : LoadMultMM<"lwm32">, LWM_FM_MM<0x5>;
 
   /// Move Conditional
   def MOVZ_I_MM : MMRel, CMov_I_I_FT<"movz", GPR32Opnd, GPR32Opnd,
@@ -508,6 +554,9 @@ let DecoderNamespace = "MicroMips", Predicates = [InMicroMips] in {
   def TLBR_MM : MMRel, TLB<"tlbr">, COP0_TLB_FM_MM<0x4d>;
   def TLBWI_MM : MMRel, TLB<"tlbwi">, COP0_TLB_FM_MM<0x8d>;
   def TLBWR_MM : MMRel, TLB<"tlbwr">, COP0_TLB_FM_MM<0xcd>;
+
+  def SDBBP_MM : MMRel, SYS_FT<"sdbbp">, SDBBP_FM_MM;
+  def RDHWR_MM : MMRel, ReadHardware<GPR32Opnd, HWRegsOpnd>, RDHWR_FM_MM;
 }
 
 let Predicates = [InMicroMips] in {
@@ -515,6 +564,13 @@ let Predicates = [InMicroMips] in {
 //===----------------------------------------------------------------------===//
 // MicroMips arbitrary patterns that map to one or more instructions
 //===----------------------------------------------------------------------===//
+
+def : MipsPat<(add GPRMM16:$src, immSExtAddiur2:$imm),
+              (ADDIUR2_MM GPRMM16:$src, immSExtAddiur2:$imm)>;
+def : MipsPat<(add GPR32:$src, immSExtAddius5:$imm),
+              (ADDIUS5_MM GPR32:$src, immSExtAddius5:$imm)>;
+def : MipsPat<(add GPR32:$src, immSExt16:$imm),
+              (ADDiu_MM GPR32:$src, immSExt16:$imm)>;
 
 def : MipsPat<(and GPRMM16:$src, immZExtAndi16:$imm),
               (ANDI16_MM GPRMM16:$src, immZExtAndi16:$imm)>;
