@@ -715,8 +715,8 @@ bool HexagonInstrInfo::isPredicable(MachineInstr *MI) const {
 
   case Hexagon::ASLH:
   case Hexagon::ASRH:
-  case Hexagon::SXTB:
-  case Hexagon::SXTH:
+  case Hexagon::A2_sxtb:
+  case Hexagon::A2_sxth:
   case Hexagon::ZXTB:
   case Hexagon::ZXTH:
     return Subtarget.hasV4TOps();
@@ -1307,14 +1307,24 @@ bool HexagonInstrInfo::isConditionalALU32 (const MachineInstr* MI) const {
     case Hexagon::A2_porfnew:
     case Hexagon::A2_port:
     case Hexagon::A2_portnew:
+    case Hexagon::A2_psubf:
+    case Hexagon::A2_psubfnew:
+    case Hexagon::A2_psubt:
+    case Hexagon::A2_psubtnew:
     case Hexagon::A2_pxorf:
     case Hexagon::A2_pxorfnew:
     case Hexagon::A2_pxort:
     case Hexagon::A2_pxortnew:
+    case Hexagon::A4_psxthf:
+    case Hexagon::A4_psxthfnew:
+    case Hexagon::A4_psxtht:
+    case Hexagon::A4_psxthtnew:
+    case Hexagon::A4_psxtbf:
+    case Hexagon::A4_psxtbfnew:
+    case Hexagon::A4_psxtbt:
+    case Hexagon::A4_psxtbtnew:
     case Hexagon::ADD_ri_cPt:
     case Hexagon::ADD_ri_cNotPt:
-    case Hexagon::SUB_rr_cPt:
-    case Hexagon::SUB_rr_cNotPt:
     case Hexagon::COMBINE_rr_cPt:
     case Hexagon::COMBINE_rr_cNotPt:
       return true;
@@ -1322,10 +1332,6 @@ bool HexagonInstrInfo::isConditionalALU32 (const MachineInstr* MI) const {
     case Hexagon::ASLH_cNotPt_V4:
     case Hexagon::ASRH_cPt_V4:
     case Hexagon::ASRH_cNotPt_V4:
-    case Hexagon::SXTB_cPt_V4:
-    case Hexagon::SXTB_cNotPt_V4:
-    case Hexagon::SXTH_cPt_V4:
-    case Hexagon::SXTH_cNotPt_V4:
     case Hexagon::ZXTB_cPt_V4:
     case Hexagon::ZXTB_cNotPt_V4:
     case Hexagon::ZXTH_cPt_V4:

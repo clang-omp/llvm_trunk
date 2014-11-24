@@ -104,9 +104,8 @@ struct AnonStructTypeKeyInfo {
     bool isPacked;
     KeyTy(const ArrayRef<Type*>& E, bool P) :
       ETypes(E), isPacked(P) {}
-    KeyTy(const StructType* ST) :
-      ETypes(ArrayRef<Type*>(ST->element_begin(), ST->element_end())),
-      isPacked(ST->isPacked()) {}
+    KeyTy(const StructType *ST)
+        : ETypes(ST->elements()), isPacked(ST->isPacked()) {}
     bool operator==(const KeyTy& that) const {
       if (isPacked != that.isPacked)
         return false;
@@ -149,10 +148,9 @@ struct FunctionTypeKeyInfo {
     bool isVarArg;
     KeyTy(const Type* R, const ArrayRef<Type*>& P, bool V) :
       ReturnType(R), Params(P), isVarArg(V) {}
-    KeyTy(const FunctionType* FT) :
-      ReturnType(FT->getReturnType()),
-      Params(makeArrayRef(FT->param_begin(), FT->param_end())),
-      isVarArg(FT->isVarArg()) {}
+    KeyTy(const FunctionType *FT)
+        : ReturnType(FT->getReturnType()), Params(FT->params()),
+          isVarArg(FT->isVarArg()) {}
     bool operator==(const KeyTy& that) const {
       if (ReturnType != that.ReturnType)
         return false;
