@@ -71,7 +71,9 @@ public:
   /// source module.
   Type *get(Type *SrcTy);
 
-  FunctionType *get(FunctionType *T) {return cast<FunctionType>(get((Type*)T));}
+  FunctionType *get(FunctionType *T) {
+    return cast<FunctionType>(get((Type *)T));
+  }
 
   /// Dump out the type map for debugging purposes.
   void dump() const {
@@ -85,25 +87,13 @@ public:
   }
 
 private:
-  Type *getImpl(Type *T);
-  /// Implement the ValueMapTypeRemapper interface.
-  Type *remapType(Type *SrcTy) override {
-    return get(SrcTy);
-  }
+  Type *remapType(Type *SrcTy) override { return get(SrcTy); }
 
   bool areTypesIsomorphic(Type *DstTy, Type *SrcTy);
 };
 }
 
 void TypeMapTy::addTypeMapping(Type *DstTy, Type *SrcTy) {
-  Type *&Entry = MappedTypes[SrcTy];
-  if (Entry) return;
-
-  if (DstTy == SrcTy) {
-    Entry = DstTy;
-    return;
-  }
-
   // Check to see if these types are recursively isomorphic and establish a
   // mapping between them if so.
   if (areTypesIsomorphic(DstTy, SrcTy)) {
@@ -130,7 +120,8 @@ void TypeMapTy::addTypeMapping(Type *DstTy, Type *SrcTy) {
 /// false if they are not.
 bool TypeMapTy::areTypesIsomorphic(Type *DstTy, Type *SrcTy) {
   // Two types with differing kinds are clearly not isomorphic.
-  if (DstTy->getTypeID() != SrcTy->getTypeID()) return false;
+  if (DstTy->getTypeID() != SrcTy->getTypeID())
+    return false;
 
   // If we have an entry in the MappedTypes table, then we have our answer.
   Type *&Entry = MappedTypes[SrcTy];
@@ -202,9 +193,9 @@ bool TypeMapTy::areTypesIsomorphic(Type *DstTy, Type *SrcTy) {
   Entry = DstTy;
   SpeculativeTypes.push_back(SrcTy);
 
-  for (unsigned i = 0, e = SrcTy->getNumContainedTypes(); i != e; ++i)
-    if (!areTypesIsomorphic(DstTy->getContainedType(i),
-                            SrcTy->getContainedType(i)))
+  for (unsigned I = 0, E = SrcTy->getNumContainedTypes(); I != E; ++I)
+    if (!areTypesIsomorphic(DstTy->getContainedType(I),
+                            SrcTy->getContainedType(I)))
       return false;
 
   // If everything seems to have lined up, then everything is great.
@@ -213,57 +204,26 @@ bool TypeMapTy::areTypesIsomorphic(Type *DstTy, Type *SrcTy) {
 
 void TypeMapTy::linkDefinedTypeBodies() {
   SmallVector<Type*, 16> Elements;
-  SmallString<16> TmpName;
-
-  // Note that processing entries in this loop (calling 'get') can add new
-  // entries to the SrcDefinitionsToResolve vector.
-  while (!SrcDefinitionsToResolve.empty()) {
-    StructType *SrcSTy = SrcDefinitionsToResolve.pop_back_val();
+  for (StructType *SrcSTy : SrcDefinitionsToResolve) {
     StructType *DstSTy = cast<StructType>(MappedTypes[SrcSTy]);
-
-    // TypeMap is a many-to-one mapping, if there were multiple types that
-    // provide a body for DstSTy then previous iterations of this loop may have
-    // already handled it.  Just ignore this case.
-    if (!DstSTy->isOpaque()) continue;
-    assert(!SrcSTy->isOpaque() && "Not resolving a definition?");
+    assert(DstSTy->isOpaque());
 
     // Map the body of the source type over to a new body for the dest type.
     Elements.resize(SrcSTy->getNumElements());
-    for (unsigned i = 0, e = Elements.size(); i != e; ++i)
-      Elements[i] = getImpl(SrcSTy->getElementType(i));
+    for (unsigned I = 0, E = Elements.size(); I != E; ++I)
+      Elements[I] = get(SrcSTy->getElementType(I));
 
     DstSTy->setBody(Elements, SrcSTy->isPacked());
-
-    // If DstSTy has no name or has a longer name than STy, then viciously steal
-    // STy's name.
-    if (!SrcSTy->hasName()) continue;
-    StringRef SrcName = SrcSTy->getName();
-
-    if (!DstSTy->hasName() || DstSTy->getName().size() > SrcName.size()) {
-      TmpName.insert(TmpName.end(), SrcName.begin(), SrcName.end());
-      SrcSTy->setName("");
-      DstSTy->setName(TmpName.str());
-      TmpName.clear();
-    }
   }
-
+  SrcDefinitionsToResolve.clear();
   DstResolvedOpaqueTypes.clear();
 }
 
 Type *TypeMapTy::get(Type *Ty) {
-  Type *Result = getImpl(Ty);
-
-  // If this caused a reference to any struct type, resolve it before returning.
-  if (!SrcDefinitionsToResolve.empty())
-    linkDefinedTypeBodies();
-  return Result;
-}
-
-/// This is the recursive version of get().
-Type *TypeMapTy::getImpl(Type *Ty) {
   // If we already have an entry for this type, return it.
   Type **Entry = &MappedTypes[Ty];
-  if (*Entry) return *Entry;
+  if (*Entry)
+    return *Entry;
 
   // If this is not a named struct type, then just map all of the elements and
   // then rebuild the type from inside out.
@@ -277,14 +237,15 @@ Type *TypeMapTy::getImpl(Type *Ty) {
     bool AnyChange = false;
     SmallVector<Type*, 4> ElementTypes;
     ElementTypes.resize(Ty->getNumContainedTypes());
-    for (unsigned i = 0, e = Ty->getNumContainedTypes(); i != e; ++i) {
-      ElementTypes[i] = getImpl(Ty->getContainedType(i));
-      AnyChange |= ElementTypes[i] != Ty->getContainedType(i);
+    for (unsigned I = 0, E = Ty->getNumContainedTypes(); I != E; ++I) {
+      ElementTypes[I] = get(Ty->getContainedType(I));
+      AnyChange |= ElementTypes[I] != Ty->getContainedType(I);
     }
 
     // If we found our type while recursively processing stuff, just use it.
     Entry = &MappedTypes[Ty];
-    if (*Entry) return *Entry;
+    if (*Entry)
+      return *Entry;
 
     // If all of the element types mapped directly over, then the type is usable
     // as-is.
@@ -293,7 +254,8 @@ Type *TypeMapTy::getImpl(Type *Ty) {
 
     // Otherwise, rebuild a modified type.
     switch (Ty->getTypeID()) {
-    default: llvm_unreachable("unknown derived type to remap");
+    default:
+      llvm_unreachable("unknown derived type to remap");
     case Type::ArrayTyID:
       return *Entry = ArrayType::get(ElementTypes[0],
                                      cast<ArrayType>(Ty)->getNumElements());
@@ -301,8 +263,8 @@ Type *TypeMapTy::getImpl(Type *Ty) {
       return *Entry = VectorType::get(ElementTypes[0],
                                       cast<VectorType>(Ty)->getNumElements());
     case Type::PointerTyID:
-      return *Entry = PointerType::get(ElementTypes[0],
-                                      cast<PointerType>(Ty)->getAddressSpace());
+      return *Entry = PointerType::get(
+                 ElementTypes[0], cast<PointerType>(Ty)->getAddressSpace());
     case Type::FunctionTyID:
       return *Entry = FunctionType::get(ElementTypes[0],
                                         makeArrayRef(ElementTypes).slice(1),
@@ -347,15 +309,27 @@ Type *TypeMapTy::getImpl(Type *Ty) {
     return *Entry = STy;
   }
 
-  // Otherwise we create a new type and resolve its body later.  This will be
-  // resolved by the top level of get().
-  SrcDefinitionsToResolve.push_back(STy);
+  // Otherwise we create a new type.
   StructType *DTy = StructType::create(STy->getContext());
   // A new identified structure type was created. Add it to the set of
   // identified structs in the destination module.
   DstStructTypesSet.insert(DTy);
-  DstResolvedOpaqueTypes.insert(DTy);
-  return *Entry = DTy;
+  *Entry = DTy;
+
+  SmallVector<Type*, 4> ElementTypes;
+  ElementTypes.resize(STy->getNumElements());
+  for (unsigned I = 0, E = ElementTypes.size(); I != E; ++I)
+    ElementTypes[I] = get(STy->getElementType(I));
+  DTy->setBody(ElementTypes, STy->isPacked());
+
+  // Steal STy's name.
+  if (STy->hasName()) {
+    SmallString<16> TmpName = STy->getName();
+    STy->setName("");
+    DTy->setName(TmpName);
+  }
+
+  return DTy;
 }
 
 //===----------------------------------------------------------------------===//
@@ -1594,10 +1568,6 @@ bool ModuleLinker::run() {
       break;
     }
   } while (LinkedInAnyFunctions);
-
-  // Now that all of the types from the source are used, resolve any structs
-  // copied over to the dest that didn't exist there.
-  TypeMap.linkDefinedTypeBodies();
 
   return false;
 }
