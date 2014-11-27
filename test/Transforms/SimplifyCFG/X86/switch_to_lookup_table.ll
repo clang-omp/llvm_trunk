@@ -1171,3 +1171,36 @@ return:
 ; CHECK-NEXT:  ret i32 [[R]]
 }
 
+; Cannot reuse the table range compare, because the phi at the switch merge
+; point is not dominated by the switch.
+define i32 @no_reuse_cmp2(i32 %x, i32 %y) {
+entry:
+  %ec = icmp ne i32 %y, 0
+  br i1 %ec, label %switch.entry, label %sw.epilog
+switch.entry:
+  switch i32 %x, label %sw.default [
+    i32 0, label %sw.bb
+    i32 1, label %sw.bb1
+    i32 2, label %sw.bb2
+    i32 3, label %sw.bb3
+  ]
+sw.bb: br label %sw.epilog
+sw.bb1: br label %sw.epilog
+sw.bb2: br label %sw.epilog
+sw.bb3: br label %sw.epilog
+sw.default: br label %sw.epilog
+sw.epilog:
+  %r.0 = phi i32 [100, %entry], [ 0, %sw.default ], [ 13, %sw.bb3 ], [ 12, %sw.bb2 ], [ 11, %sw.bb1 ], [ 10, %sw.bb ]
+  %cmp = icmp eq i32 %r.0, 0       ; This compare can be "replaced".
+  br i1 %cmp, label %if.then, label %if.end
+if.then: br label %return
+if.end: br label %return
+return:
+  %retval.0 = phi i32 [ 100, %if.then ], [ %r.0, %if.end ]
+  ret i32 %retval.0
+; CHECK-LABEL: @no_reuse_cmp2(
+; CHECK:  %r.0 = phi
+; CHECK-NEXT:  %cmp = icmp eq i32 %r.0, 0
+; CHECK-NEXT:  [[R:%.+]] = select i1 %cmp
+; CHECK-NEXT:  ret i32 [[R]]
+}

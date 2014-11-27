@@ -4040,6 +4040,17 @@ static void reuseTableCompare(User *PhiUser, BasicBlock *PhiBlock,
     assert((CaseConst == TrueConst || CaseConst == FalseConst) &&
            "Expect true or false as compare result.");
   }
+ 
+  // Check if the branch instruction dominates the phi node. It's a simple
+  // dominance check, but sufficient for our needs.
+  // Although this check is invariant in the calling loops, it's better to do it
+  // at this late stage. Practically we do it at most once for a switch.
+  BasicBlock *BranchBlock = RangeCheckBranch->getParent();
+  for (auto PI = pred_begin(PhiBlock), E = pred_end(PhiBlock); PI != E; ++PI) {
+    BasicBlock *Pred = *PI;
+    if (Pred != BranchBlock && Pred->getUniquePredecessor() != BranchBlock)
+      return;
+  }
 
   if (DefaultConst == FalseConst) {
     // The compare yields the same result. We can replace it.
