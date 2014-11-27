@@ -159,14 +159,6 @@ public:
 class RuntimeDyldImpl {
   friend class RuntimeDyld::LoadedObjectInfo;
   friend class RuntimeDyldCheckerImpl;
-private:
-
-  uint64_t getAnySymbolRemoteAddress(StringRef Symbol) {
-    if (uint64_t InternalSymbolAddr = getSymbolLoadAddress(Symbol))
-      return InternalSymbolAddr;
-    return MemMgr->getSymbolAddress(Symbol);
-  }
-
 protected:
   // The MemoryManager to load objects into.
   RTDyldMemoryManager *MemMgr;
@@ -340,7 +332,7 @@ protected:
   virtual relocation_iterator
   processRelocationRef(unsigned SectionID, relocation_iterator RelI,
                        const ObjectFile &Obj, ObjSectionToIDMap &ObjSectionToID,
-                       const SymbolTableMap &Symbols, StubMap &Stubs) = 0;
+                       StubMap &Stubs) = 0;
 
   /// \brief Resolve relocations to external symbols.
   void resolveExternalSymbols();
