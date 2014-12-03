@@ -58,8 +58,9 @@ class TypeMapTy : public ValueMapTypeRemapper {
   SmallPtrSet<StructType*, 16> DstResolvedOpaqueTypes;
 
 public:
-  TypeMapTy() {}
+  TypeMapTy(TypeSet &Set) : DstStructTypesSet(Set) {}
 
+  TypeSet &DstStructTypesSet;
   /// Indicate that the specified type in the destination module is conceptually
   /// equivalent to the specified type in the source module.
   void addTypeMapping(Type *DstTy, Type *SrcTy);
@@ -225,6 +226,13 @@ void TypeMapTy::linkDefinedTypeBodies() {
 }
 
 Type *TypeMapTy::get(Type *Ty) {
+#ifndef NDEBUG
+  for (auto &Pair : MappedTypes) {
+    assert(!(Pair.first != Ty && Pair.second == Ty) &&
+           "mapping to a source type");
+  }
+#endif
+
   // If we already have an entry for this type, return it.
   Type **Entry = &MappedTypes[Ty];
   if (*Entry)
@@ -310,6 +318,7 @@ Type *TypeMapTy::get(Type *Ty) {
   if (STy->isOpaque()) {
     // A named structure type from src module is used. Add it to the Set of
     // identified structs in the destination module.
+    DstStructTypesSet.insert(STy);
     return *Entry = STy;
   }
 
@@ -317,6 +326,7 @@ Type *TypeMapTy::get(Type *Ty) {
   StructType *DTy = StructType::create(STy->getContext());
   // A new identified structure type was created. Add it to the set of
   // identified structs in the destination module.
+  DstStructTypesSet.insert(DTy);
   *Entry = DTy;
 
   SmallVector<Type*, 4> ElementTypes;
@@ -402,9 +412,9 @@ class ModuleLinker {
   Linker::DiagnosticHandlerFunction DiagnosticHandler;
 
 public:
-  ModuleLinker(Module *dstM, Module *srcM,
+  ModuleLinker(Module *dstM, TypeSet &Set, Module *srcM,
                Linker::DiagnosticHandlerFunction DiagnosticHandler)
-      : DstM(dstM), SrcM(srcM),
+      : DstM(dstM), SrcM(srcM), TypeMap(Set),
         ValMaterializer(TypeMap, DstM, LazilyLinkFunctions),
         DiagnosticHandler(DiagnosticHandler) {}
 
@@ -781,43 +791,42 @@ void ModuleLinker::computeTypeMapping() {
   // At this point, the destination module may have a type "%foo = { i32 }" for
   // example.  When the source module got loaded into the same LLVMContext, if
   // it had the same type, it would have been renamed to "%foo.42 = { i32 }".
-  TypeFinder SrcStructTypes;
-  SrcStructTypes.run(*SrcM, true);
-  SmallPtrSet<StructType*, 32> SrcStructTypesSet(SrcStructTypes.begin(),
-                                                 SrcStructTypes.end());
-
-  for (unsigned i = 0, e = SrcStructTypes.size(); i != e; ++i) {
-    StructType *ST = SrcStructTypes[i];
-    if (!ST->hasName()) continue;
+  std::vector<StructType *> Types = SrcM->getIdentifiedStructTypes();
+  for (StructType *ST : Types) {
+    if (!ST->hasName())
+      continue;
 
     // Check to see if there is a dot in the name followed by a digit.
     size_t DotPos = ST->getName().rfind('.');
     if (DotPos == 0 || DotPos == StringRef::npos ||
         ST->getName().back() == '.' ||
-        !isdigit(static_cast<unsigned char>(ST->getName()[DotPos+1])))
+        !isdigit(static_cast<unsigned char>(ST->getName()[DotPos + 1])))
       continue;
 
     // Check to see if the destination module has a struct with the prefix name.
-    if (StructType *DST = DstM->getTypeByName(ST->getName().substr(0, DotPos)))
-      // Don't use it if this actually came from the source module. They're in
-      // the same LLVMContext after all. Also don't use it unless the type is
-      // actually used in the destination module. This can happen in situations
-      // like this:
-      //
-      //      Module A                         Module B
-      //      --------                         --------
-      //   %Z = type { %A }                %B = type { %C.1 }
-      //   %A = type { %B.1, [7 x i8] }    %C.1 = type { i8* }
-      //   %B.1 = type { %C }              %A.2 = type { %B.3, [5 x i8] }
-      //   %C = type { i8* }               %B.3 = type { %C.1 }
-      //
-      // When we link Module B with Module A, the '%B' in Module B is
-      // used. However, that would then use '%C.1'. But when we process '%C.1',
-      // we prefer to take the '%C' version. So we are then left with both
-      // '%C.1' and '%C' being used for the same types. This leads to some
-      // variables using one type and some using the other.
-      if (!SrcStructTypesSet.count(DST))
-        TypeMap.addTypeMapping(DST, ST);
+    StructType *DST = DstM->getTypeByName(ST->getName().substr(0, DotPos));
+    if (!DST)
+      continue;
+
+    // Don't use it if this actually came from the source module. They're in
+    // the same LLVMContext after all. Also don't use it unless the type is
+    // actually used in the destination module. This can happen in situations
+    // like this:
+    //
+    //      Module A                         Module B
+    //      --------                         --------
+    //   %Z = type { %A }                %B = type { %C.1 }
+    //   %A = type { %B.1, [7 x i8] }    %C.1 = type { i8* }
+    //   %B.1 = type { %C }              %A.2 = type { %B.3, [5 x i8] }
+    //   %C = type { i8* }               %B.3 = type { %C.1 }
+    //
+    // When we link Module B with Module A, the '%B' in Module B is
+    // used. However, that would then use '%C.1'. But when we process '%C.1',
+    // we prefer to take the '%C' version. So we are then left with both
+    // '%C.1' and '%C' being used for the same types. This leads to some
+    // variables using one type and some using the other.
+    if (TypeMap.DstStructTypesSet.count(DST))
+      TypeMap.addTypeMapping(DST, ST);
   }
 
   // Now that we have discovered all of the type equivalences, get a body for
@@ -1494,11 +1503,16 @@ bool ModuleLinker::run() {
     if (DoNotLinkFromSource.count(SF)) continue;
 
     Function *DF = cast<Function>(ValueMap[SF]);
-    if (SF->hasPrefixData()) {
-      // Link in the prefix data.
+
+    // Link in the prefix data.
+    if (SF->hasPrefixData())
       DF->setPrefixData(MapValue(
           SF->getPrefixData(), ValueMap, RF_None, &TypeMap, &ValMaterializer));
-    }
+
+    // Link in the prologue data.
+    if (SF->hasPrologueData())
+      DF->setPrologueData(MapValue(
+          SF->getPrologueData(), ValueMap, RF_None, &TypeMap, &ValMaterializer));
 
     // Materialize if needed.
     if (std::error_code EC = SF->materialize())
@@ -1578,6 +1592,10 @@ bool ModuleLinker::run() {
 void Linker::init(Module *M, DiagnosticHandlerFunction DiagnosticHandler) {
   this->Composite = M;
   this->DiagnosticHandler = DiagnosticHandler;
+
+  TypeFinder StructTypes;
+  StructTypes.run(*M, true);
+  IdentifiedStructTypes.insert(StructTypes.begin(), StructTypes.end());
 }
 
 Linker::Linker(Module *M, DiagnosticHandlerFunction DiagnosticHandler) {
@@ -1599,7 +1617,8 @@ void Linker::deleteModule() {
 }
 
 bool Linker::linkInModule(Module *Src) {
-  ModuleLinker TheLinker(Composite, Src, DiagnosticHandler);
+  ModuleLinker TheLinker(Composite, IdentifiedStructTypes, Src,
+                         DiagnosticHandler);
   return TheLinker.run();
 }
 

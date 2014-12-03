@@ -1194,8 +1194,6 @@ private:
     NewLoopID->replaceOperandWith(0, NewLoopID);
 
     TheLoop->setLoopID(NewLoopID);
-    if (LoopID)
-      LoopID->replaceAllUsesWith(NewLoopID);
     LoopID = NewLoopID;
   }
 
@@ -3532,6 +3530,15 @@ bool LoopVectorizationLegality::canVectorize() {
 
   // We must have a single exiting block.
   if (!TheLoop->getExitingBlock()) {
+    emitAnalysis(
+        Report() << "loop control flow is not understood by vectorizer");
+    return false;
+  }
+
+  // We only handle bottom-tested loops, i.e. loop in which the condition is
+  // checked at the end of each iteration. With that we can assume that all
+  // instructions in the loop are executed the same number of times.
+  if (TheLoop->getExitingBlock() != TheLoop->getLoopLatch()) {
     emitAnalysis(
         Report() << "loop control flow is not understood by vectorizer");
     return false;
