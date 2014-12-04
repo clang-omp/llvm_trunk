@@ -63,7 +63,7 @@ Instead, the statepoint intrinsic marks the actual site of the safepoint or stat
 When lowered, this example would generate the following x86 assembly::
   put assembly here
 
-Each of the potentially relocated values has been spilled to the stack, and a record of that location has been recorded to the StackMap section.  If the garbage collector needs to update any of these pointers during the call, it knows exactly what to change.  
+Each of the potentially relocated values has been spilled to the stack, and a record of that location has been recorded to the :ref:`Stack Map section <stackmap-section>`.  If the garbage collector needs to update any of these pointers during the call, it knows exactly what to change.  
 
 Intrinsics
 ===========
@@ -175,12 +175,10 @@ The return value of ''gc_relocate'' is the potentially relocated value of the po
 A ''gc_relocate'' is modeled as a 'readnone' pure function.  It has no side effects since it is just a way to extract information about work done during the actual call modeled by the ''gc_statepoint''.
 
 
-StackMap Format
+Stack Map Format
 ================
 
-Locations for each pointer value which may need read and/or updated by the runtime or collector are provided via the StackMap format specified in the PatchPoint documentation. 
-
-.. TODO: link
+Locations for each pointer value which may need read and/or updated by the runtime or collector are provided via the :ref:`Stack Map format <stackmap-format>` specified in the PatchPoint documentation. 
 
 Each statepoint generates the following Locations:
 
@@ -206,4 +204,8 @@ The actual correctness property implemented is slightly stronger than this.  We 
 By construction, this property will be upheld by the optimizer if correctly established in the source IR.  This is a key invariant of the design.  
 
 The existing IR Verifier pass has been extended to check most of the local restrictions on the intrinsics mentioned in their respective documentation.  The current implementation in LLVM does not check the key relocation invariant, but this is ongoing work on developing such a verifier.  Please ask on llvmdev if you're interested in experimenting with the current version.
+
+Bugs and Enhancements
+=====================
+Currently known bugs and enhancements under consideration can be tracked by performing a `bugzilla search <http://llvm.org/bugs/buglist.cgi?cmdtype=runnamed&namedcmd=Statepoint%20Bugs&list_id=64342>`_ for [Statepoint] in the summary field. When filing new bugs, please use this tag so that interested parties see the newly filed bug.  As with most LLVM features, design discussions take place on `llvmdev <http://lists.cs.uiuc.edu/mailman/listinfo/llvmdev>`_, and patches should be sent to `llvm-commits <http://lists.cs.uiuc.edu/mailman/listinfo/llvm-commits>`_ for review.
 

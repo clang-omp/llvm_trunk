@@ -232,9 +232,7 @@ std::vector<MVT::SimpleValueType> CodeGenTarget::
 getRegisterVTs(Record *R) const {
   const CodeGenRegister *Reg = getRegBank().getReg(R);
   std::vector<MVT::SimpleValueType> Result;
-  ArrayRef<CodeGenRegisterClass*> RCs = getRegBank().getRegClasses();
-  for (unsigned i = 0, e = RCs.size(); i != e; ++i) {
-    const CodeGenRegisterClass &RC = *RCs[i];
+  for (const auto &RC : getRegBank().getRegClasses()) {
     if (RC.contains(Reg)) {
       ArrayRef<MVT::SimpleValueType> InVTs = RC.getValueTypes();
       Result.insert(Result.end(), InVTs.begin(), InVTs.end());
@@ -249,10 +247,8 @@ getRegisterVTs(Record *R) const {
 
 
 void CodeGenTarget::ReadLegalValueTypes() const {
-  ArrayRef<CodeGenRegisterClass*> RCs = getRegBank().getRegClasses();
-  for (unsigned i = 0, e = RCs.size(); i != e; ++i)
-    for (unsigned ri = 0, re = RCs[i]->VTs.size(); ri != re; ++ri)
-      LegalValueTypes.push_back(RCs[i]->VTs[ri]);
+  for (const auto &RC : getRegBank().getRegClasses())
+    LegalValueTypes.insert(LegalValueTypes.end(), RC.VTs.begin(), RC.VTs.end());
 
   // Remove duplicates.
   std::sort(LegalValueTypes.begin(), LegalValueTypes.end());
@@ -538,7 +534,8 @@ CodeGenIntrinsic::CodeGenIntrinsic(Record *R) {
       // variants with iAny types; otherwise, if the intrinsic is not
       // overloaded, all the types can be specified directly.
       assert(((!TyEl->isSubClassOf("LLVMExtendedType") &&
-               !TyEl->isSubClassOf("LLVMTruncatedType")) ||
+               !TyEl->isSubClassOf("LLVMTruncatedType") &&
+               !TyEl->isSubClassOf("LLVMVectorSameWidth")) ||
               VT == MVT::iAny || VT == MVT::vAny) &&
              "Expected iAny or vAny type");
     } else

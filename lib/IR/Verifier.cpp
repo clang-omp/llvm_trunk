@@ -68,6 +68,7 @@
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
+#include "llvm/IR/Statepoint.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
@@ -2405,6 +2406,19 @@ bool Verifier::VerifyIntrinsicType(Type *Ty,
            !isa<VectorType>(ArgTys[D.getArgumentNumber()]) ||
            VectorType::getHalfElementsVectorType(
                          cast<VectorType>(ArgTys[D.getArgumentNumber()])) != Ty;
+  case IITDescriptor::SameVecWidthArgument: {
+    if (D.getArgumentNumber() >= ArgTys.size())
+      return true;
+    VectorType * ReferenceType =
+      dyn_cast<VectorType>(ArgTys[D.getArgumentNumber()]);
+    VectorType *ThisArgType = dyn_cast<VectorType>(Ty);
+    if (!ThisArgType || !ReferenceType || 
+        (ReferenceType->getVectorNumElements() !=
+         ThisArgType->getVectorNumElements()))
+      return true;
+    return VerifyIntrinsicType(ThisArgType->getVectorElementType(),
+                               Infos, ArgTys);
+  }
   }
   llvm_unreachable("unhandled");
 }
@@ -2561,28 +2575,78 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
     break;
  
   case Intrinsic::experimental_gc_statepoint: {
-    // target, # call args = 0, # deopt args = 0, #gc args = 0 -> 4 args
-    assert(CI.getNumArgOperands() >= 4 &&
-           "not enough arguments to statepoint");
-    for (User* U : CI.users()) {
-      const CallInst* GCRelocCall = cast<const CallInst>(U);
-      const Function *GCRelocFn = GCRelocCall->getCalledFunction();
-      Assert1(GCRelocFn && GCRelocFn->isDeclaration() &&
-              (GCRelocFn->getIntrinsicID() == Intrinsic::experimental_gc_result_int ||
-               GCRelocFn->getIntrinsicID() == Intrinsic::experimental_gc_result_float ||
-               GCRelocFn->getIntrinsicID() == Intrinsic::experimental_gc_result_ptr ||
-               GCRelocFn->getIntrinsicID() == Intrinsic::experimental_gc_relocate),
-              "gc.result or gc.relocate are the only value uses of statepoint", &CI);
-      if (GCRelocFn->getIntrinsicID() == Intrinsic::experimental_gc_result_int ||
-          GCRelocFn->getIntrinsicID() == Intrinsic::experimental_gc_result_float ||
-          GCRelocFn->getIntrinsicID() == Intrinsic::experimental_gc_result_ptr ) {
-        Assert1(GCRelocCall->getNumArgOperands() == 1, "wrong number of arguments", &CI);
-        Assert2(GCRelocCall->getArgOperand(0) == &CI, "connected to wrong statepoint", &CI, GCRelocCall);
-      } else if (GCRelocFn->getIntrinsicID() == Intrinsic::experimental_gc_relocate) {
-        Assert1(GCRelocCall->getNumArgOperands() == 3, "wrong number of arguments", &CI);
-        Assert2(GCRelocCall->getArgOperand(0) == &CI, "connected to wrong statepoint", &CI, GCRelocCall);
-      } else {
-        llvm_unreachable("unsupported use type - how'd we get past the assert?");
+    Assert1(!CI.doesNotAccessMemory() &&
+            !CI.onlyReadsMemory(),
+            "gc.statepoint must read and write memory to preserve "
+            "reordering restrictions required by safepoint semantics", &CI);
+    Assert1(!CI.isInlineAsm(),
+            "gc.statepoint support for inline assembly unimplemented", &CI);
+    
+    const Value *Target = CI.getArgOperand(0);
+    const PointerType *PT = dyn_cast<PointerType>(Target->getType());
+    Assert2(PT && PT->getElementType()->isFunctionTy(),
+            "gc.statepoint callee must be of function pointer type",
+            &CI, Target);
+    FunctionType *TargetFuncType = cast<FunctionType>(PT->getElementType());
+    Assert1(!TargetFuncType->isVarArg(),
+            "gc.statepoint support for var arg functions not implemented", &CI);
+
+    const Value *NumCallArgsV = CI.getArgOperand(1);
+    Assert1(isa<ConstantInt>(NumCallArgsV),
+            "gc.statepoint number of arguments to underlying call "
+            "must be constant integer", &CI);
+    const int NumCallArgs = cast<ConstantInt>(NumCallArgsV)->getZExtValue();
+    Assert1(NumCallArgs >= 0,
+            "gc.statepoint number of arguments to underlying call "
+            "must be positive", &CI);
+    Assert1(NumCallArgs == (int)TargetFuncType->getNumParams(),
+            "gc.statepoint mismatch in number of call args", &CI);
+
+    const Value *Unused = CI.getArgOperand(2);
+    Assert1(isa<ConstantInt>(Unused) &&
+            cast<ConstantInt>(Unused)->isNullValue(),
+            "gc.statepoint parameter #3 must be zero", &CI);
+
+    // Verify that the types of the call parameter arguments match
+    // the type of the wrapped callee.
+    for (int i = 0; i < NumCallArgs; i++) {
+      Type *ParamType = TargetFuncType->getParamType(i);
+      Type *ArgType = CI.getArgOperand(3+i)->getType();
+      Assert1(ArgType == ParamType,
+              "gc.statepoint call argument does not match wrapped "
+              "function type", &CI);
+    }
+    const int EndCallArgsInx = 2+NumCallArgs;
+    const Value *NumDeoptArgsV = CI.getArgOperand(EndCallArgsInx+1);
+    Assert1(isa<ConstantInt>(NumDeoptArgsV),
+            "gc.statepoint number of deoptimization arguments "
+            "must be constant integer", &CI);
+    const int NumDeoptArgs = cast<ConstantInt>(NumDeoptArgsV)->getZExtValue();
+    Assert1(NumDeoptArgs >= 0,
+            "gc.statepoint number of deoptimization arguments "
+            "must be positive", &CI);
+
+    Assert1(4 + NumCallArgs + NumDeoptArgs <= (int)CI.getNumArgOperands(),
+            "gc.statepoint too few arguments according to length fields", &CI);
+    
+    // Check that the only uses of this gc.statepoint are gc.result or 
+    // gc.relocate calls which are tied to this statepoint and thus part
+    // of the same statepoint sequence
+    for (User *U : CI.users()) {
+      const CallInst *Call = dyn_cast<const CallInst>(U);
+      Assert2(Call, "illegal use of statepoint token", &CI, U);
+      if (!Call) continue;
+      Assert2(isGCRelocate(Call) || isGCResult(Call),
+              "gc.result or gc.relocate are the only value uses"
+              "of a gc.statepoint", &CI, U);
+      if (isGCResult(Call)) {
+        Assert2(Call->getArgOperand(0) == &CI,
+                "gc.result connected to wrong gc.statepoint",
+                &CI, Call);
+      } else if (isGCRelocate(Call)) {
+        Assert2(Call->getArgOperand(0) == &CI,
+                "gc.relocate connected to wrong gc.statepoint",
+                &CI, Call);
       }
     }
 
@@ -2599,21 +2663,24 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
   case Intrinsic::experimental_gc_result_int:
   case Intrinsic::experimental_gc_result_float:
   case Intrinsic::experimental_gc_result_ptr: {
-    Assert1(CI.getNumArgOperands() == 1, "wrong number of arguments", &CI);
-
     // Are we tied to a statepoint properly?
     CallSite StatepointCS(CI.getArgOperand(0));
     const Function *StatepointFn = StatepointCS.getCalledFunction();
     Assert2(StatepointFn && StatepointFn->isDeclaration() &&
             StatepointFn->getIntrinsicID() == Intrinsic::experimental_gc_statepoint,
             "token must be from a statepoint", &CI, CI.getArgOperand(0));
+
+    // Assert that result type matches wrapped callee.
+    const Value *Target = StatepointCS.getArgument(0);
+    const PointerType *PT = cast<PointerType>(Target->getType());
+    const FunctionType *TargetFuncType =
+      cast<FunctionType>(PT->getElementType());
+    Assert1(CI.getType() == TargetFuncType->getReturnType(),
+            "gc.result result type does not match wrapped callee",
+            &CI);
     break;
   }
   case Intrinsic::experimental_gc_relocate: {
-    // Some checks to ensure gc.relocate has the correct set of
-    // parameters.  TODO: we can make these tests much stricter.
-    Assert1(CI.getNumArgOperands() == 3, "wrong number of arguments", &CI);
-
     // Are we tied to a statepoint properly?
     CallSite StatepointCS(CI.getArgOperand(0));
     const Function *StatepointFn =
@@ -2638,6 +2705,12 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
     Assert1(0 <= DerivedIndex &&
             DerivedIndex < (int)StatepointCS.arg_size(),
             "index out of bounds", &CI);
+
+    // Assert that the result type matches the type of the relocated pointer
+    GCRelocateOperands Operands(&CI);
+    Assert1(Operands.derivedPtr()->getType() == CI.getType(),
+            "gc.relocate: relocating a pointer shouldn't change it's type",
+            &CI);
     break;
   }
   };

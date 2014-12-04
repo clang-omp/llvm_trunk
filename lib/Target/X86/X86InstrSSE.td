@@ -3099,7 +3099,7 @@ let isCodeGenOnly = 1 in {
 // previously we generated:
 //   addss %xmm0, %xmm1
 //   movss %xmm1, %xmm0
-// 
+//
 // we now generate:
 //   addss %xmm1, %xmm0
 
@@ -3321,7 +3321,7 @@ let Predicates = [HasAVX] in {
 // previously we generated:
 //   addps %xmm0, %xmm1
 //   movss %xmm1, %xmm0
-// 
+//
 // we now generate:
 //   addss %xmm1, %xmm0
 
@@ -3329,13 +3329,13 @@ let Predicates = [UseSSE1] in {
   def : Pat<(v4f32 (X86Movss (v4f32 VR128:$dst),
                    (fadd (v4f32 VR128:$dst), (v4f32 VR128:$src)))),
             (ADDSSrr_Int v4f32:$dst, v4f32:$src)>;
-  def : Pat<(v4f32 (X86Movss (v4f32 VR128:$dst), 
+  def : Pat<(v4f32 (X86Movss (v4f32 VR128:$dst),
                    (fsub (v4f32 VR128:$dst), (v4f32 VR128:$src)))),
             (SUBSSrr_Int v4f32:$dst, v4f32:$src)>;
   def : Pat<(v4f32 (X86Movss (v4f32 VR128:$dst),
                    (fmul (v4f32 VR128:$dst), (v4f32 VR128:$src)))),
             (MULSSrr_Int v4f32:$dst, v4f32:$src)>;
-  def : Pat<(v4f32 (X86Movss (v4f32 VR128:$dst), 
+  def : Pat<(v4f32 (X86Movss (v4f32 VR128:$dst),
                    (fdiv (v4f32 VR128:$dst), (v4f32 VR128:$src)))),
             (DIVSSrr_Int v4f32:$dst, v4f32:$src)>;
 }
@@ -3364,13 +3364,13 @@ let Predicates = [UseSSE41] in {
   def : Pat<(v4f32 (X86Blendi (v4f32 VR128:$dst),
                    (fadd (v4f32 VR128:$dst), (v4f32 VR128:$src)), (i8 1))),
             (ADDSSrr_Int v4f32:$dst, v4f32:$src)>;
-  def : Pat<(v4f32 (X86Blendi (v4f32 VR128:$dst), 
+  def : Pat<(v4f32 (X86Blendi (v4f32 VR128:$dst),
                    (fsub (v4f32 VR128:$dst), (v4f32 VR128:$src)), (i8 1))),
             (SUBSSrr_Int v4f32:$dst, v4f32:$src)>;
   def : Pat<(v4f32 (X86Blendi (v4f32 VR128:$dst),
                    (fmul (v4f32 VR128:$dst), (v4f32 VR128:$src)), (i8 1))),
             (MULSSrr_Int v4f32:$dst, v4f32:$src)>;
-  def : Pat<(v4f32 (X86Blendi (v4f32 VR128:$dst), 
+  def : Pat<(v4f32 (X86Blendi (v4f32 VR128:$dst),
                    (fdiv (v4f32 VR128:$dst), (v4f32 VR128:$src)), (i8 1))),
             (DIVSSrr_Int v4f32:$dst, v4f32:$src)>;
 
@@ -3435,13 +3435,13 @@ let Predicates = [HasAVX] in {
   def : Pat<(v4f32 (X86Blendi (v4f32 VR128:$dst),
                    (fadd (v4f32 VR128:$dst), (v4f32 VR128:$src)), (i8 1))),
             (VADDSSrr_Int v4f32:$dst, v4f32:$src)>;
-  def : Pat<(v4f32 (X86Blendi (v4f32 VR128:$dst), 
+  def : Pat<(v4f32 (X86Blendi (v4f32 VR128:$dst),
                    (fsub (v4f32 VR128:$dst), (v4f32 VR128:$src)), (i8 1))),
             (VSUBSSrr_Int v4f32:$dst, v4f32:$src)>;
   def : Pat<(v4f32 (X86Blendi (v4f32 VR128:$dst),
                    (fmul (v4f32 VR128:$dst), (v4f32 VR128:$src)), (i8 1))),
             (VMULSSrr_Int v4f32:$dst, v4f32:$src)>;
-  def : Pat<(v4f32 (X86Blendi (v4f32 VR128:$dst), 
+  def : Pat<(v4f32 (X86Blendi (v4f32 VR128:$dst),
                    (fdiv (v4f32 VR128:$dst), (v4f32 VR128:$src)), (i8 1))),
             (VDIVSSrr_Int v4f32:$dst, v4f32:$src)>;
 
@@ -3980,8 +3980,8 @@ def CLFLUSH : I<0xAE, MRM7m, (outs), (ins i8mem:$src),
 let SchedRW = [WriteNop] in {
 // Pause. This "instruction" is encoded as "rep; nop", so even though it
 // was introduced with SSE2, it's backward compatible.
-def PAUSE : I<0x90, RawFrm, (outs), (ins),  
-              "pause", [(int_x86_sse2_pause)], IIC_SSE_PAUSE>, 
+def PAUSE : I<0x90, RawFrm, (outs), (ins),
+              "pause", [(int_x86_sse2_pause)], IIC_SSE_PAUSE>,
               OBXS, Requires<[HasSSE2]>;
 }
 
@@ -6428,21 +6428,21 @@ let Predicates = [HasAVX2] in {
   def : Pat<(v4i64 (X86vsext (v4i32 (bitconvert (v2i64 (load addr:$src)))))),
             (VPMOVSXDQYrm addr:$src)>;
 
-  def : Pat<(v8i32 (X86vsext (v16i8 (bitconvert (v2i64 
+  def : Pat<(v8i32 (X86vsext (v16i8 (bitconvert (v2i64
                     (scalar_to_vector (loadi64 addr:$src))))))),
             (VPMOVSXBDYrm addr:$src)>;
-  def : Pat<(v8i32 (X86vsext (v16i8 (bitconvert (v2f64 
+  def : Pat<(v8i32 (X86vsext (v16i8 (bitconvert (v2f64
                     (scalar_to_vector (loadf64 addr:$src))))))),
             (VPMOVSXBDYrm addr:$src)>;
 
-  def : Pat<(v4i64 (X86vsext (v8i16 (bitconvert (v2i64 
+  def : Pat<(v4i64 (X86vsext (v8i16 (bitconvert (v2i64
                     (scalar_to_vector (loadi64 addr:$src))))))),
             (VPMOVSXWQYrm addr:$src)>;
-  def : Pat<(v4i64 (X86vsext (v8i16 (bitconvert (v2f64 
+  def : Pat<(v4i64 (X86vsext (v8i16 (bitconvert (v2f64
                     (scalar_to_vector (loadf64 addr:$src))))))),
             (VPMOVSXWQYrm addr:$src)>;
 
-  def : Pat<(v4i64 (X86vsext (v16i8 (bitconvert (v4i32 
+  def : Pat<(v4i64 (X86vsext (v16i8 (bitconvert (v4i32
                     (scalar_to_vector (loadi32 addr:$src))))))),
             (VPMOVSXBQYrm addr:$src)>;
 }
@@ -9259,6 +9259,61 @@ defm VPMASKMOVQ : avx2_pmovmask<"vpmaskmovq",
                                 int_x86_avx2_maskload_q_256,
                                 int_x86_avx2_maskstore_q,
                                 int_x86_avx2_maskstore_q_256>, VEX_W;
+
+def: Pat<(masked_store addr:$ptr, (v8i32 VR256:$mask), (v8f32 VR256:$src)),
+         (VPMASKMOVDYmr addr:$ptr, VR256:$mask, VR256:$src)>;
+
+def: Pat<(masked_store addr:$ptr, (v8i32 VR256:$mask), (v8i32 VR256:$src)),
+         (VPMASKMOVDYmr addr:$ptr, VR256:$mask, VR256:$src)>;
+
+def: Pat<(v8f32 (masked_load addr:$ptr, (v8i32 VR256:$mask), undef)),
+         (VPMASKMOVDYrm VR256:$mask, addr:$ptr)>;
+
+def: Pat<(v8f32 (masked_load addr:$ptr, (v8i32 VR256:$mask),
+                             (bc_v8f32 (v8i32 immAllZerosV)))),
+         (VPMASKMOVDYrm VR256:$mask, addr:$ptr)>;
+
+def: Pat<(v8f32 (masked_load addr:$ptr, (v8i32 VR256:$mask), (v8f32 VR256:$src0))),
+         (VBLENDVPSYrr VR256:$src0, (VPMASKMOVDYrm VR256:$mask, addr:$ptr),
+                       VR256:$mask)>;
+
+def: Pat<(v8i32 (masked_load addr:$ptr, (v8i32 VR256:$mask), undef)),
+         (VPMASKMOVDYrm VR256:$mask, addr:$ptr)>;
+
+def: Pat<(v8i32 (masked_load addr:$ptr, (v8i32 VR256:$mask), (v8i32 immAllZerosV))),
+         (VPMASKMOVDYrm VR256:$mask, addr:$ptr)>;
+
+def: Pat<(v8i32 (masked_load addr:$ptr, (v8i32 VR256:$mask), (v8i32 VR256:$src0))),
+         (VBLENDVPSYrr VR256:$src0, (VPMASKMOVDYrm VR256:$mask, addr:$ptr),
+                       VR256:$mask)>;
+
+def: Pat<(masked_store addr:$ptr, (v4i64 VR256:$mask), (v4f64 VR256:$src)),
+         (VPMASKMOVQYmr addr:$ptr, VR256:$mask, VR256:$src)>;
+
+def: Pat<(masked_store addr:$ptr, (v4i64 VR256:$mask), (v4i64 VR256:$src)),
+         (VPMASKMOVQYmr addr:$ptr, VR256:$mask, VR256:$src)>;
+
+def: Pat<(v4f64 (masked_load addr:$ptr, (v4i64 VR256:$mask), undef)),
+         (VPMASKMOVQYrm VR256:$mask, addr:$ptr)>;
+
+def: Pat<(v4f64 (masked_load addr:$ptr, (v4i64 VR256:$mask),
+                             (v4f64 immAllZerosV))),
+         (VPMASKMOVQYrm VR256:$mask, addr:$ptr)>;
+
+def: Pat<(v4f64 (masked_load addr:$ptr, (v4i64 VR256:$mask), (v4f64 VR256:$src0))),
+         (VBLENDVPDYrr VR256:$src0, (VPMASKMOVQYrm VR256:$mask, addr:$ptr),
+                       VR256:$mask)>;
+
+def: Pat<(v4i64 (masked_load addr:$ptr, (v4i64 VR256:$mask), undef)),
+         (VPMASKMOVQYrm VR256:$mask, addr:$ptr)>;
+
+def: Pat<(v4i64 (masked_load addr:$ptr, (v4i64 VR256:$mask),
+                             (bc_v4i64 (v8i32 immAllZerosV)))),
+         (VPMASKMOVQYrm VR256:$mask, addr:$ptr)>;
+
+def: Pat<(v4i64 (masked_load addr:$ptr, (v4i64 VR256:$mask), (v4i64 VR256:$src0))),
+         (VBLENDVPDYrr VR256:$src0, (VPMASKMOVQYrm VR256:$mask, addr:$ptr),
+                       VR256:$mask)>;
 
 
 //===----------------------------------------------------------------------===//

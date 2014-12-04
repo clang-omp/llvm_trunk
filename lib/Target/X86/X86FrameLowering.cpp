@@ -448,6 +448,8 @@ void X86FrameLowering::getStackProbeFunction(const X86Subtarget &STI,
 
   [if needs base pointer]
       mov  %rsp, %rbx
+      [if needs to restore base pointer]
+          mov %rsp, -MMM(%rbp)
 
   ; Emit CFI info
   [if needs FP]
@@ -516,7 +518,7 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF) const {
       X86FI->getCalleeSavedFrameSize() - TailCallReturnAddrDelta);
 
   bool UseStackProbe = (STI.isOSWindows() && !STI.isTargetMacho());
-  
+
   // If this is x86-64 and the Red Zone is not disabled, if we are a leaf
   // function, and use up to 128 bytes of stack space, don't have a frame
   // pointer, calls, or dynamic alloca then we do not need to adjust the
@@ -570,6 +572,9 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF) const {
   if (HasFP) {
     // Calculate required stack adjustment.
     uint64_t FrameSize = StackSize - SlotSize;
+    // If required, include space for extra hidden slot for stashing base pointer.
+    if (X86FI->getRestoreBasePointer())
+      FrameSize += SlotSize;
     if (RegInfo->needsStackRealignment(MF)) {
       // Callee-saved registers are pushed on stack before the stack
       // is realigned.
@@ -838,6 +843,14 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF) const {
     BuildMI(MBB, MBBI, DL, TII.get(Opc), BasePtr)
       .addReg(StackPtr)
       .setMIFlag(MachineInstr::FrameSetup);
+    if (X86FI->getRestoreBasePointer()) {
+      // Stash value of base pointer.  Saving RSP instead of EBP shortens dependence chain.
+      unsigned Opm = Uses64BitFramePtr ? X86::MOV64mr : X86::MOV32mr;
+      addRegOffset(BuildMI(MBB, MBBI, DL, TII.get(Opm)),
+                   FramePtr, true, X86FI->getRestoreBasePointerOffset())
+        .addReg(StackPtr)
+        .setMIFlag(MachineInstr::FrameSetup);
+    }
   }
 
   if (((!HasFP && NumBytes) || PushedRegs) && NeedsDwarfCFI) {
@@ -1139,7 +1152,7 @@ int X86FrameLowering::getFrameIndexReference(const MachineFunction &MF, int FI,
 int X86FrameLowering::getFrameIndexOffsetFromSP(const MachineFunction &MF, int FI) const {
   const MachineFrameInfo *MFI = MF.getFrameInfo();
   // Does not include any dynamic realign.
-  const uint64_t StackSize = MFI->getStackSize(); 
+  const uint64_t StackSize = MFI->getStackSize();
   {
 #ifndef NDEBUG
     const X86RegisterInfo *RegInfo =
@@ -1154,7 +1167,7 @@ int X86FrameLowering::getFrameIndexOffsetFromSP(const MachineFunction &MF, int F
     // refer to arguments to the function which are stored in the *callers*
     // frame).  As a result, THE RESULT OF THIS CALL IS MEANINGLESS FOR CSRs
     // AND FixedObjects IFF needsStackRealignment or hasVarSizedObject.
-        
+
     assert(!RegInfo->hasBasePointer(MF) && "we don't handle this case");
 
     // We don't handle tail calls, and shouldn't be seeing them
