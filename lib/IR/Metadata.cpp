@@ -48,11 +48,13 @@ MDString *MDString::get(LLVMContext &Context, StringRef Str) {
   bool WasInserted = Store.insert(Entry);
   (void)WasInserted;
   assert(WasInserted && "Expected entry to be inserted");
+  Entry->second.Entry = Entry;
   return &Entry->second;
 }
 
 StringRef MDString::getString() const {
-  return StringMapEntry<MDString>::GetStringMapEntryFromValue(*this).first();
+  assert(Entry && "Expected to find string map entry");
+  return Entry->first();
 }
 
 //===----------------------------------------------------------------------===//
@@ -183,43 +185,20 @@ static const Function *getFunctionForValue(Value *V) {
   return nullptr;
 }
 
-#ifndef NDEBUG
-static const Function *assertLocalFunction(const MDNode *N) {
-  if (!N->isFunctionLocal()) return nullptr;
-
-  // FIXME: This does not handle cyclic function local metadata.
-  const Function *F = nullptr, *NewF = nullptr;
-  for (unsigned i = 0, e = N->getNumOperands(); i != e; ++i) {
-    if (Value *V = N->getOperand(i)) {
-      if (MDNode *MD = dyn_cast<MDNode>(V))
-        NewF = assertLocalFunction(MD);
-      else
-        NewF = getFunctionForValue(V);
-    }
-    if (!F)
-      F = NewF;
-    else
-      assert((NewF == nullptr || F == NewF) &&
-             "inconsistent function-local metadata");
-  }
-  return F;
-}
-#endif
-
 // getFunction - If this metadata is function-local and recursively has a
 // function-local operand, return the first such operand's parent function.
 // Otherwise, return null. getFunction() should not be used for performance-
 // critical code because it recursively visits all the MDNode's operands.  
 const Function *MDNode::getFunction() const {
-#ifndef NDEBUG
-  return assertLocalFunction(this);
-#else
-  if (!isFunctionLocal()) return nullptr;
-  for (unsigned i = 0, e = getNumOperands(); i != e; ++i)
-    if (const Function *F = getFunctionForValue(getOperand(i)))
-      return F;
-  return nullptr;
-#endif
+  if (!isFunctionLocal())
+    return nullptr;
+  assert(getNumOperands() == 1 &&
+         "Expected one operand for function-local metadata");
+  assert(getOperand(0) &&
+         "Expected non-null operand for function-local metadata");
+  assert(!getOperand(0)->getType()->isMetadataTy() &&
+         "Expected non-metadata as operand of function-local metadata");
+  return getFunctionForValue(getOperand(0));
 }
 
 /// \brief Check if the Value  would require a function-local MDNode.
@@ -256,6 +235,14 @@ MDNode *MDNode::getMDNode(LLVMContext &Context, ArrayRef<Value*> Vals,
   case FL_Yes:
     isFunctionLocal = true;
     break;
+  }
+
+  if (isFunctionLocal) {
+    assert(Vals.size() == 1 &&
+           "Expected exactly one operand for function-local metadata");
+    assert(Vals[0] && "Expected non-null operand for function-local metadata");
+    assert(!Vals[0]->getType()->isMetadataTy() &&
+           "Expected non-metadata as operand of function-local metadata");
   }
 
   // Coallocate space for the node and Operands together, then placement new.
@@ -321,6 +308,8 @@ void MDNode::replaceOperand(MDNodeOperand *Op, Value *To) {
   // Handle this case by implicitly dropping the MDNode reference to null.
   // Likewise if the MDNode is function-local but for a different function.
   if (To && isFunctionLocalValue(To)) {
+    assert(!To->getType()->isMetadataTy() &&
+           "Expected non-metadata as operand of function-local metadata");
     if (!isFunctionLocal())
       To = nullptr;
     else {
@@ -335,6 +324,14 @@ void MDNode::replaceOperand(MDNodeOperand *Op, Value *To) {
   
   if (From == To)
     return;
+
+  // If this MDValue was previously function-local but no longer is, clear
+  // its function-local flag.
+  if (isFunctionLocal() && !(To && isFunctionLocalValue(To))) {
+    assert(getNumOperands() == 1 &&
+           "Expected function-local metadata to have exactly one operand");
+    setValueSubclassData(getSubclassDataFromValue() & ~FunctionLocalBit);
+  }
 
   // If this node is already not being uniqued (because one of the operands
   // already went to null), then there is nothing else to do here.
@@ -356,7 +353,9 @@ void MDNode::replaceOperand(MDNodeOperand *Op, Value *To) {
   // anymore.  This commonly occurs during destruction, and uniquing these
   // brings little reuse.  Also, this means we don't need to include
   // isFunctionLocal bits in the hash for MDNodes.
-  if (!To) {
+  //
+  // Also drop uniquing if this has a reference to itself.
+  if (!To || To == this) {
     setIsNotUniqued();
     return;
   }
@@ -375,22 +374,25 @@ void MDNode::replaceOperand(MDNodeOperand *Op, Value *To) {
 
   N->Hash = Key.Hash;
   Store.insert(N);
+}
 
-  // If this MDValue was previously function-local but no longer is, clear
-  // its function-local flag.
-  if (isFunctionLocal() && !isFunctionLocalValue(To)) {
-    bool isStillFunctionLocal = false;
-    for (unsigned i = 0, e = getNumOperands(); i != e; ++i) {
-      Value *V = getOperand(i);
-      if (!V) continue;
-      if (isFunctionLocalValue(V)) {
-        isStillFunctionLocal = true;
-        break;
+/// \brief Get a node, or a self-reference that looks like it.
+///
+/// Special handling for finding self-references, for use by \a
+/// MDNode::concatenate() and \a MDNode::intersect() to maintain behaviour from
+/// when self-referencing nodes were still uniqued.  If the first operand has
+/// the same operands as \c Ops, return the first operand instead.
+static MDNode *getOrSelfReference(LLVMContext &Context, ArrayRef<Value *> Ops) {
+  if (!Ops.empty())
+    if (MDNode *N = dyn_cast_or_null<MDNode>(Ops[0]))
+      if (N->getNumOperands() == Ops.size() && N == N->getOperand(0)) {
+        for (unsigned I = 1, E = Ops.size(); I != E; ++I)
+          if (Ops[I] != N->getOperand(I))
+            return MDNode::get(Context, Ops);
+        return N;
       }
-    }
-    if (!isStillFunctionLocal)
-      setValueSubclassData(getSubclassDataFromValue() & ~FunctionLocalBit);
-  }
+
+  return MDNode::get(Context, Ops);
 }
 
 MDNode *MDNode::concatenate(MDNode *A, MDNode *B) {
@@ -408,7 +410,9 @@ MDNode *MDNode::concatenate(MDNode *A, MDNode *B) {
   for (unsigned i = 0, ie = B->getNumOperands(); i != ie; ++i)
     Vals[j++] = B->getOperand(i);
 
-  return MDNode::get(A->getContext(), Vals);
+  // FIXME: This preserves long-standing behaviour, but is it really the right
+  // behaviour?  Or was that an unintended side-effect of node uniquing?
+  return getOrSelfReference(A->getContext(), Vals);
 }
 
 MDNode *MDNode::intersect(MDNode *A, MDNode *B) {
@@ -425,7 +429,9 @@ MDNode *MDNode::intersect(MDNode *A, MDNode *B) {
       }
   }
 
-  return MDNode::get(A->getContext(), Vals);
+  // FIXME: This preserves long-standing behaviour, but is it really the right
+  // behaviour?  Or was that an unintended side-effect of node uniquing?
+  return getOrSelfReference(A->getContext(), Vals);
 }
 
 MDNode *MDNode::getMostGenericFPMath(MDNode *A, MDNode *B) {
@@ -658,6 +664,8 @@ void Instruction::setMetadata(unsigned KindID, MDNode *Node) {
   
   // Handle the case when we're adding/updating metadata on an instruction.
   if (Node) {
+    assert(!Node->isFunctionLocal() &&
+           "Function-local metadata cannot be attached to instructions");
     LLVMContextImpl::MDMapTy &Info = getContext().pImpl->MetadataStore[this];
     assert(!Info.empty() == hasMetadataHashEntry() &&
            "HasMetadata bit is wonked");

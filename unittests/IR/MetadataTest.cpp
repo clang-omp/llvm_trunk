@@ -96,11 +96,7 @@ TEST_F(MDNodeTest, Simple) {
   MDNode *n5 = MDNode::getIfExists(Context, c1);
   MDNode *n6 = MDNode::getIfExists(Context, c2);
   EXPECT_NE(n1, n2);
-#ifdef ENABLE_MDNODE_UNIQUING
   EXPECT_EQ(n1, n3);
-#else
-  (void) n3;
-#endif
   EXPECT_EQ(n4, n1);
   EXPECT_EQ(n5, n2);
   EXPECT_EQ(n6, (Value*)nullptr);
@@ -125,6 +121,46 @@ TEST_F(MDNodeTest, Delete) {
   EXPECT_EQ(n, wvh);
 
   delete I;
+}
+
+TEST_F(MDNodeTest, SelfReference) {
+  // !0 = metadata !{metadata !0}
+  // !1 = metadata !{metadata !0}
+  {
+    MDNode *Temp = MDNode::getTemporary(Context, None);
+    Value *Args[] = {Temp};
+    MDNode *Self = MDNode::get(Context, Args);
+    Self->replaceOperandWith(0, Self);
+    MDNode::deleteTemporary(Temp);
+    ASSERT_EQ(Self, Self->getOperand(0));
+
+    // Self-references should be distinct, so MDNode::get() should grab a
+    // uniqued node that references Self, not Self.
+    Args[0] = Self;
+    MDNode *Ref1 = MDNode::get(Context, Args);
+    MDNode *Ref2 = MDNode::get(Context, Args);
+    EXPECT_NE(Self, Ref1);
+    EXPECT_EQ(Ref1, Ref2);
+  }
+
+  // !0 = metadata !{metadata !0, metadata !{}}
+  // !1 = metadata !{metadata !0, metadata !{}}
+  {
+    MDNode *Temp = MDNode::getTemporary(Context, None);
+    Value *Args[] = {Temp, MDNode::get(Context, None)};
+    MDNode *Self = MDNode::get(Context, Args);
+    Self->replaceOperandWith(0, Self);
+    MDNode::deleteTemporary(Temp);
+    ASSERT_EQ(Self, Self->getOperand(0));
+
+    // Self-references should be distinct, so MDNode::get() should grab a
+    // uniqued node that references Self, not Self itself.
+    Args[0] = Self;
+    MDNode *Ref1 = MDNode::get(Context, Args);
+    MDNode *Ref2 = MDNode::get(Context, Args);
+    EXPECT_NE(Self, Ref1);
+    EXPECT_EQ(Ref1, Ref2);
+  }
 }
 
 TEST(NamedMDNodeTest, Search) {
