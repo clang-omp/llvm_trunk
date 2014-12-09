@@ -346,11 +346,11 @@ bool HexagonInstrInfo::analyzeCompare(const MachineInstr *MI,
 
   // Set mask and the first source register.
   switch (Opc) {
-    case Hexagon::CMPEHexagon4rr:
+    case Hexagon::C2_cmpeqp:
     case Hexagon::C2_cmpeqi:
     case Hexagon::C2_cmpeq:
-    case Hexagon::CMPGT64rr:
-    case Hexagon::CMPGTU64rr:
+    case Hexagon::C2_cmpgtp:
+    case Hexagon::C2_cmpgtup:
     case Hexagon::C2_cmpgtui:
     case Hexagon::C2_cmpgtu:
     case Hexagon::C2_cmpgti:
@@ -380,10 +380,10 @@ bool HexagonInstrInfo::analyzeCompare(const MachineInstr *MI,
 
   // Set the value/second source register.
   switch (Opc) {
-    case Hexagon::CMPEHexagon4rr:
+    case Hexagon::C2_cmpeqp:
     case Hexagon::C2_cmpeq:
-    case Hexagon::CMPGT64rr:
-    case Hexagon::CMPGTU64rr:
+    case Hexagon::C2_cmpgtp:
+    case Hexagon::C2_cmpgtup:
     case Hexagon::C2_cmpgtu:
     case Hexagon::C2_cmpgt:
     case Hexagon::CMPbEQrr_sbsb_V4:
@@ -427,7 +427,7 @@ void HexagonInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
   }
   if (Hexagon::PredRegsRegClass.contains(SrcReg, DestReg)) {
     // Map Pd = Ps to Pd = or(Ps, Ps).
-    BuildMI(MBB, I, DL, get(Hexagon::OR_pp),
+    BuildMI(MBB, I, DL, get(Hexagon::C2_or),
             DestReg).addReg(SrcReg).addReg(SrcReg);
     return;
   }
@@ -454,13 +454,13 @@ void HexagonInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
   }
   if (Hexagon::PredRegsRegClass.contains(SrcReg) &&
       Hexagon::IntRegsRegClass.contains(DestReg)) {
-    BuildMI(MBB, I, DL, get(Hexagon::TFR_RsPd), DestReg).
+    BuildMI(MBB, I, DL, get(Hexagon::C2_tfrpr), DestReg).
       addReg(SrcReg, getKillRegState(KillSrc));
     return;
   }
   if (Hexagon::IntRegsRegClass.contains(SrcReg) &&
       Hexagon::PredRegsRegClass.contains(DestReg)) {
-    BuildMI(MBB, I, DL, get(Hexagon::TFR_PdRs), DestReg).
+    BuildMI(MBB, I, DL, get(Hexagon::C2_tfrrp), DestReg).
       addReg(SrcReg, getKillRegState(KillSrc));
     return;
   }
@@ -739,10 +739,10 @@ unsigned HexagonInstrInfo::getInvertedPredicatedOpcode(const int Opc) const {
 
   switch(Opc) {
     default: llvm_unreachable("Unexpected predicated instruction");
-    case Hexagon::COMBINE_rr_cPt:
-      return Hexagon::COMBINE_rr_cNotPt;
-    case Hexagon::COMBINE_rr_cNotPt:
-      return Hexagon::COMBINE_rr_cPt;
+    case Hexagon::C2_ccombinewt:
+      return Hexagon::C2_ccombinewf;
+    case Hexagon::C2_ccombinewf:
+      return Hexagon::C2_ccombinewt;
 
       // Dealloc_return.
     case Hexagon::DEALLOC_RET_cPt_V4:
@@ -780,9 +780,9 @@ getMatchingCondBranchOpcode(int Opc, bool invertPredicate) const {
   case Hexagon::TFRI_f:
     return !invertPredicate ? Hexagon::TFRI_cPt_f :
                               Hexagon::TFRI_cNotPt_f;
-  case Hexagon::COMBINE_rr:
-    return !invertPredicate ? Hexagon::COMBINE_rr_cPt :
-                              Hexagon::COMBINE_rr_cNotPt;
+  case Hexagon::A2_combinew:
+    return !invertPredicate ? Hexagon::C2_ccombinewt :
+                              Hexagon::C2_ccombinewf;
 
   // Word.
   case Hexagon::STriw_f:
@@ -1340,8 +1340,8 @@ bool HexagonInstrInfo::isConditionalALU32 (const MachineInstr* MI) const {
     case Hexagon::A4_pzxthtnew:
     case Hexagon::ADD_ri_cPt:
     case Hexagon::ADD_ri_cNotPt:
-    case Hexagon::COMBINE_rr_cPt:
-    case Hexagon::COMBINE_rr_cNotPt:
+    case Hexagon::C2_ccombinewt:
+    case Hexagon::C2_ccombinewf:
       return true;
   }
 }
@@ -1627,10 +1627,10 @@ int HexagonInstrInfo::GetDotNewPredOp(MachineInstr *MI,
 
 
   // Conditional combine
-  case Hexagon::COMBINE_rr_cPt :
-    return Hexagon::COMBINE_rr_cdnPt;
-  case Hexagon::COMBINE_rr_cNotPt :
-    return Hexagon::COMBINE_rr_cdnNotPt;
+  case Hexagon::C2_ccombinewt:
+    return Hexagon::C2_ccombinewnewt;
+  case Hexagon::C2_ccombinewf:
+    return Hexagon::C2_ccombinewnewf;
   }
 }
 
