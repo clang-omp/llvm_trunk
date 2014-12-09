@@ -55,7 +55,6 @@ public:
   }
   ~TrackingMDRef() { untrack(); }
 
-  LLVM_EXPLICIT operator bool() const { return get(); }
   Metadata *get() const { return MD; }
   operator Metadata *() const { return get(); }
   Metadata *operator->() const { return get(); }
@@ -77,6 +76,9 @@ public:
   bool hasTrivialDestructor() const {
     return !MD || !MetadataTracking::isReplaceable(*MD);
   }
+
+  bool operator==(const TrackingMDRef &X) const { return MD == X.MD; }
+  bool operator!=(const TrackingMDRef &X) const { return MD != X.MD; }
 
 private:
   void track() {
@@ -118,11 +120,13 @@ public:
     return *this;
   }
 
-  LLVM_EXPLICIT operator bool() const { return get(); }
   T *get() const { return (T *)Ref.get(); }
   operator T *() const { return get(); }
   T *operator->() const { return get(); }
   T &operator*() const { return *get(); }
+
+  bool operator==(const TypedTrackingMDRef &X) const { return Ref == X.Ref; }
+  bool operator!=(const TypedTrackingMDRef &X) const { return Ref != X.Ref; }
 
   void reset() { Ref.reset(); }
   void reset(T *MD) { Ref.reset(static_cast<Metadata *>(MD)); }
