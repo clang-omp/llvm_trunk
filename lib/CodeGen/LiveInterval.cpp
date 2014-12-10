@@ -26,6 +26,7 @@
 #include "llvm/CodeGen/LiveIntervalAnalysis.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetRegisterInfo.h"
 #include <algorithm>
@@ -185,6 +186,27 @@ bool LiveRange::overlaps(SlotIndex Start, SlotIndex End) const {
   return I != begin() && (--I)->end > Start;
 }
 
+bool LiveRange::covers(const LiveRange &Other) const {
+  if (empty())
+    return Other.empty();
+
+  const_iterator I = begin();
+  for (const_iterator O = Other.begin(), OE = Other.end(); O != OE; ++O) {
+    I = advanceTo(I, O->start);
+    if (I == end() || I->start > O->start)
+      return false;
+
+    // Check adjacent live segments and see if we can get behind O->end.
+    while (I->end < O->end) {
+      const_iterator Last = I;
+      // Get next segment and abort if it was not adjacent.
+      ++I;
+      if (I == end() || Last->end != I->start)
+        return false;
+    }
+  }
+  return true;
+}
 
 /// ValNo is dead, remove it.  If it is the largest value number, just nuke it
 /// (and any other deleted values neighboring it), otherwise mark it as ~1U so
@@ -570,6 +592,23 @@ VNInfo *LiveRange::MergeValueNumberInto(VNInfo *V1, VNInfo *V2) {
   return V2;
 }
 
+void LiveInterval::removeEmptySubRanges() {
+  SubRange **NextPtr = &SubRanges;
+  SubRange *I = *NextPtr;
+  while (I != nullptr) {
+    if (!I->empty()) {
+      NextPtr = &I->Next;
+      I = *NextPtr;
+      continue;
+    }
+    // Skip empty subranges until we find the first nonempty one.
+    do {
+      I = I->Next;
+    } while (I != nullptr && I->empty());
+    *NextPtr = I;
+  }
+}
+
 unsigned LiveInterval::getSize() const {
   unsigned Sum = 0;
   for (const_iterator I = begin(), E = end(); I != E; ++I)
@@ -620,6 +659,11 @@ void LiveRange::print(raw_ostream &OS) const {
 void LiveInterval::print(raw_ostream &OS) const {
   OS << PrintReg(reg) << ' ';
   super::print(OS);
+  // Print subranges
+  for (const_subrange_iterator I = subrange_begin(), E = subrange_end();
+       I != E; ++I) {
+    OS << format(" L%04X ", I->LaneMask) << *I;
+  }
 }
 
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
@@ -646,6 +690,27 @@ void LiveRange::verify() const {
       if (I->end == std::next(I)->start)
         assert(I->valno != std::next(I)->valno);
     }
+  }
+}
+
+void LiveInterval::verify(const MachineRegisterInfo *MRI) const {
+  super::verify();
+
+  // Make sure SubRanges are fine and LaneMasks are disjunct.
+  unsigned Mask = 0;
+  unsigned MaxMask = MRI != nullptr ? MRI->getMaxLaneMaskForVReg(reg) : ~0u;
+  for (const_subrange_iterator I = subrange_begin(), E = subrange_end(); I != E;
+       ++I) {
+    // Subrange lanemask should be disjunct to any previous subrange masks.
+    assert((Mask & I->LaneMask) == 0);
+    Mask |= I->LaneMask;
+
+    // subrange mask should not contained in maximum lane mask for the vreg.
+    assert((Mask & ~MaxMask) == 0);
+
+    I->verify();
+    // Main liverange should cover subrange.
+    assert(covers(*I));
   }
 }
 #endif
@@ -938,6 +1003,8 @@ void ConnectedVNInfoEqClasses::Distribute(LiveInterval *LIV[],
     } else
       *J++ = *I;
   }
+  // TODO: do not cheat anymore by simply cleaning all subranges
+  LI.clearSubRanges();
   LI.segments.erase(J, E);
 
   // Transfer VNInfos to their new owners and renumber them.

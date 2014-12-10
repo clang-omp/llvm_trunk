@@ -378,14 +378,18 @@ StringRef MDString::getString() const {
 
 void *MDNode::operator new(size_t Size, unsigned NumOps) {
   void *Ptr = ::operator new(Size + NumOps * sizeof(MDOperand));
-  MDOperand *First = new (Ptr) MDOperand[NumOps];
-  return First + NumOps;
+  MDOperand *O = static_cast<MDOperand *>(Ptr);
+  for (MDOperand *E = O + NumOps; O != E; ++O)
+    (void)new (O) MDOperand;
+  return O;
 }
 
 void MDNode::operator delete(void *Mem) {
   MDNode *N = static_cast<MDNode *>(Mem);
-  MDOperand *Last = static_cast<MDOperand *>(Mem);
-  ::operator delete(Last - N->NumOperands);
+  MDOperand *O = static_cast<MDOperand *>(Mem);
+  for (MDOperand *E = O - N->NumOperands; O != E; --O)
+    (O - 1)->~MDOperand();
+  ::operator delete(O);
 }
 
 MDNode::MDNode(LLVMContext &Context, unsigned ID, ArrayRef<Metadata *> MDs)
@@ -424,6 +428,7 @@ GenericMDNode::~GenericMDNode() {
     pImpl->NonUniquedMDNodes.erase(this);
   else
     pImpl->MDNodeSet.erase(this);
+  dropAllReferences();
 }
 
 void GenericMDNode::resolve() {
@@ -495,6 +500,14 @@ void GenericMDNode::handleChangedOperand(void *Ref, Metadata *New) {
     setOperand(Op, New);
     return;
   }
+  if (InRAUW) {
+    // We just hit a recursion due to RAUW.  Set the operand and move on, since
+    // we're about to be deleted.
+    //
+    // FIXME: Can this cycle really happen?
+    setOperand(Op, New);
+    return;
+  }
 
   auto &Store = getContext().pImpl->MDNodeSet;
   Store.erase(this);
@@ -550,6 +563,7 @@ void GenericMDNode::handleChangedOperand(void *Ref, Metadata *New) {
   // Collision.
   if (!isResolved()) {
     // Still unresolved, so RAUW.
+    InRAUW = true;
     ReplaceableUses->replaceAllUsesWith(*I);
     delete this;
     return;
