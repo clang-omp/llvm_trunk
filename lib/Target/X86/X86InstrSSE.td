@@ -1332,6 +1332,8 @@ let Predicates = [HasAVX] in {
                  (bc_v4i32 (v2i64 (X86vzload addr:$src2)))),
             (VMOVHPSrm VR128:$src1, addr:$src2)>;
 
+  // VMOVHPD patterns
+  
   // FIXME: Instead of X86Unpckl, there should be a X86Movlhpd here, the problem
   // is during lowering, where it's not possible to recognize the load fold
   // cause it has two uses through a bitcast. One use disappears at isel time
@@ -1344,6 +1346,11 @@ let Predicates = [HasAVX] in {
   def : Pat<(v2f64 (X86Unpckl VR128:$src1,
                       (bc_v2f64 (v2i64 (scalar_to_vector (loadi64 addr:$src2)))))),
             (VMOVHPDrm VR128:$src1, addr:$src2)>;
+
+  def : Pat<(store (f64 (vector_extract
+                          (v2f64 (X86VPermilpi VR128:$src, (i8 1))),
+                          (iPTR 0))), addr:$dst),
+            (VMOVHPDmr addr:$dst, VR128:$src)>;
 }
 
 let Predicates = [UseSSE1] in {
@@ -1357,6 +1364,8 @@ let Predicates = [UseSSE1] in {
 }
 
 let Predicates = [UseSSE2] in {
+  // MOVHPD patterns
+
   // FIXME: Instead of X86Unpckl, there should be a X86Movlhpd here, the problem
   // is during lowering, where it's not possible to recognize the load fold
   // cause it has two uses through a bitcast. One use disappears at isel time
@@ -1369,6 +1378,11 @@ let Predicates = [UseSSE2] in {
   def : Pat<(v2f64 (X86Unpckl VR128:$src1,
                       (bc_v2f64 (v2i64 (scalar_to_vector (loadi64 addr:$src2)))))),
             (MOVHPDrm VR128:$src1, addr:$src2)>;
+
+  def : Pat<(store (f64 (vector_extract
+                          (v2f64 (X86Shufp VR128:$src, VR128:$src, (i8 1))),
+                          (iPTR 0))), addr:$dst),
+            (MOVHPDmr addr:$dst, VR128:$src)>;
 }
 
 //===----------------------------------------------------------------------===//
@@ -6162,6 +6176,22 @@ multiclass SS41I_pmovx_avx2_patterns<string OpcPrefix, SDNode ExtOp> {
 
   def : Pat<(v4i64 (ExtOp (v4i32 VR128:$src))),
             (!cast<I>(OpcPrefix#DQYrr) VR128:$src)>;
+
+  // On AVX2, we also support 256bit inputs.
+  def : Pat<(v16i16 (ExtOp (v32i8 VR256:$src))),
+            (!cast<I>(OpcPrefix#BWYrr) (EXTRACT_SUBREG VR256:$src, sub_xmm))>;
+  def : Pat<(v8i32 (ExtOp (v32i8 VR256:$src))),
+            (!cast<I>(OpcPrefix#BDYrr) (EXTRACT_SUBREG VR256:$src, sub_xmm))>;
+  def : Pat<(v4i64 (ExtOp (v32i8 VR256:$src))),
+            (!cast<I>(OpcPrefix#BQYrr) (EXTRACT_SUBREG VR256:$src, sub_xmm))>;
+
+  def : Pat<(v8i32 (ExtOp (v16i16 VR256:$src))),
+            (!cast<I>(OpcPrefix#WDYrr) (EXTRACT_SUBREG VR256:$src, sub_xmm))>;
+  def : Pat<(v4i64 (ExtOp (v16i16 VR256:$src))),
+            (!cast<I>(OpcPrefix#WQYrr) (EXTRACT_SUBREG VR256:$src, sub_xmm))>;
+
+  def : Pat<(v4i64 (ExtOp (v8i32 VR256:$src))),
+            (!cast<I>(OpcPrefix#DQYrr) (EXTRACT_SUBREG VR256:$src, sub_xmm))>;
 
   // AVX2 Register-Memory patterns
   def : Pat<(v16i16 (ExtOp (bc_v16i8 (loadv2i64 addr:$src)))),

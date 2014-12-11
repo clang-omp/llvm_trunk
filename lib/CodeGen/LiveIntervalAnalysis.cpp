@@ -395,9 +395,8 @@ bool LiveIntervals::shrinkToUses(LiveInterval *li,
          && "Can only shrink virtual registers");
 
   // Shrink subregister live ranges.
-  for (LiveInterval::subrange_iterator I = li->subrange_begin(),
-       E = li->subrange_end(); I != E; ++I) {
-    shrinkToUses(*I, li->reg);
+  for (LiveInterval::SubRange &S : li->subranges()) {
+    shrinkToUses(S, li->reg);
   }
 
   // Find all the values used, including PHI kills.
@@ -449,7 +448,7 @@ void LiveIntervals::computeDeadValues(LiveRange &Segments, LiveRange &LR,
                                       bool *CanSeparateRes, unsigned Reg,
                                       SmallVectorImpl<MachineInstr*> *dead) {
   bool CanSeparate = false;
-  for (auto VNI : make_range(LR.vni_begin(), LR.vni_end())) {
+  for (auto VNI : LR.valnos) {
     if (VNI->isUnused())
       continue;
     LiveRange::iterator LRI = Segments.FindSegmentContaining(VNI->def);
@@ -606,9 +605,8 @@ void LiveIntervals::pruneValue(LiveInterval &LI, SlotIndex Kill,
                                SmallVectorImpl<SlotIndex> *EndPoints) {
   pruneValue((LiveRange&)LI, Kill, EndPoints);
 
-  for (LiveInterval::subrange_iterator SR = LI.subrange_begin(),
-       SE = LI.subrange_end(); SR != SE; ++SR) {
-    pruneValue(*SR, Kill, nullptr);
+  for (LiveInterval::SubRange &SR : LI.subranges()) {
+    pruneValue(SR, Kill, nullptr);
   }
 }
 
@@ -729,9 +727,7 @@ LiveIntervals::intervalIsInOneMBB(const LiveInterval &LI) const {
 
 bool
 LiveIntervals::hasPHIKill(const LiveInterval &LI, const VNInfo *VNI) const {
-  for (LiveInterval::const_vni_iterator I = LI.vni_begin(), E = LI.vni_end();
-       I != E; ++I) {
-    const VNInfo *PHI = *I;
+  for (const VNInfo *PHI : LI.valnos) {
     if (PHI->isUnused() || !PHI->isPHIDef())
       continue;
     const MachineBasicBlock *PHIMBB = getMBBFromIndex(PHI->def);
@@ -884,11 +880,10 @@ public:
         if (LI.hasSubRanges()) {
           unsigned SubReg = MO->getSubReg();
           unsigned LaneMask = TRI.getSubRegIndexLaneMask(SubReg);
-          for (LiveInterval::subrange_iterator S = LI.subrange_begin(),
-               SE = LI.subrange_end(); S != SE; ++S) {
-            if ((S->LaneMask & LaneMask) == 0)
+          for (LiveInterval::SubRange &S : LI.subranges()) {
+            if ((S.LaneMask & LaneMask) == 0)
               continue;
-            updateRange(*S, Reg, S->LaneMask);
+            updateRange(S, Reg, S.LaneMask);
           }
         }
         updateRange(LI, Reg, 0);
@@ -1324,9 +1319,8 @@ LiveIntervals::repairIntervalsInRange(MachineBasicBlock *MBB,
     if (!LI.hasAtLeastOneValue())
       continue;
 
-    for (LiveInterval::subrange_iterator S = LI.subrange_begin(),
-         SE = LI.subrange_end(); S != SE; ++S) {
-      repairOldRegInRange(Begin, End, endIdx, *S, Reg, S->LaneMask);
+    for (LiveInterval::SubRange &S : LI.subranges()) {
+      repairOldRegInRange(Begin, End, endIdx, S, Reg, S.LaneMask);
     }
     repairOldRegInRange(Begin, End, endIdx, LI, Reg);
   }

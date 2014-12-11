@@ -915,12 +915,14 @@ Constant *llvm::ConstantFoldBinaryInstruction(unsigned Opcode,
         return C1;
       return Constant::getNullValue(C1->getType());   // undef & X -> 0
     case Instruction::Mul: {
-      ConstantInt *CI;
-      // X * undef -> undef   if X is odd or undef
-      if (((CI = dyn_cast<ConstantInt>(C1)) && CI->getValue()[0]) ||
-          ((CI = dyn_cast<ConstantInt>(C2)) && CI->getValue()[0]) ||
-          (isa<UndefValue>(C1) && isa<UndefValue>(C2)))
-        return UndefValue::get(C1->getType());
+      // undef * undef -> undef
+      if (isa<UndefValue>(C1) && isa<UndefValue>(C2))
+        return C1;
+      const APInt *CV;
+      // X * undef -> undef   if X is odd
+      if (match(C1, m_APInt(CV)) || match(C2, m_APInt(CV)))
+        if ((*CV)[0])
+          return UndefValue::get(C1->getType());
 
       // X * undef -> 0       otherwise
       return Constant::getNullValue(C1->getType());
@@ -951,21 +953,23 @@ Constant *llvm::ConstantFoldBinaryInstruction(unsigned Opcode,
         return C1;
       return Constant::getAllOnesValue(C1->getType()); // undef | X -> ~0
     case Instruction::LShr:
-      if (isa<UndefValue>(C2) && isa<UndefValue>(C1))
-        return C1;                                  // undef lshr undef -> undef
-      return Constant::getNullValue(C1->getType()); // X lshr undef -> 0
-                                                    // undef lshr X -> 0
+      // X >>l undef -> undef
+      if (isa<UndefValue>(C2))
+        return C2;
+      // undef >>l X -> 0
+      return Constant::getNullValue(C1->getType());
     case Instruction::AShr:
-      if (!isa<UndefValue>(C2))                     // undef ashr X --> all ones
-        return Constant::getAllOnesValue(C1->getType());
-      else if (isa<UndefValue>(C1)) 
-        return C1;                                  // undef ashr undef -> undef
-      else
-        return C1;                                  // X ashr undef --> X
+      // X >>a undef -> undef
+      if (isa<UndefValue>(C2))
+        return C2;
+      // TODO: undef >>a X -> undef if the shift is exact
+      // undef >>a X -> 0
+      return Constant::getNullValue(C1->getType());
     case Instruction::Shl:
-      if (isa<UndefValue>(C2) && isa<UndefValue>(C1))
-        return C1;                                  // undef shl undef -> undef
-      // undef << X -> 0   or   X << undef -> 0
+      // X << undef -> undef
+      if (isa<UndefValue>(C2))
+        return C2;
+      // undef << X -> 0
       return Constant::getNullValue(C1->getType());
     }
   }
