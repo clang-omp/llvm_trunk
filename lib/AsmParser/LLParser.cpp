@@ -2968,8 +2968,8 @@ bool LLParser::ParseMetadataAsValue(ValID &ID, PerFunctionState *PFS) {
 ///  ::= !{...}
 ///  ::= !"string"
 bool LLParser::ParseMetadata(Metadata *&MD, PerFunctionState *PFS) {
-  assert(Lex.getKind() == lltok::exclaim);
-  Lex.Lex();
+  if (ParseToken(lltok::exclaim, "expected '!' here"))
+    return true;
 
   // MDNode:
   // !{ ... }
@@ -4686,8 +4686,8 @@ int LLParser::ParseInsertValue(Instruction *&Inst, PerFunctionState &PFS) {
 ///   ::= 'null' | TypeAndValue
 bool LLParser::ParseMDNodeVector(SmallVectorImpl<Metadata *> &Elts,
                                  PerFunctionState *PFS) {
-  assert(Lex.getKind() == lltok::lbrace);
-  Lex.Lex();
+  if (ParseToken(lltok::lbrace, "expected '{' here"))
+    return true;
 
   // Check for an empty list.
   if (EatIfPresent(lltok::rbrace))
