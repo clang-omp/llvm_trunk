@@ -1532,9 +1532,8 @@ bool ModuleLinker::run() {
     GlobalValue *SGV = LazilyLinkGlobalValues.back();
     LazilyLinkGlobalValues.pop_back();
 
-    if (auto F = dyn_cast<Function>(SGV))
-      if (F->isDeclaration())
-        continue;
+    assert((!isa<Function>(SGV) || !cast<Function>(SGV)->isDeclaration()) &&
+           "users should not pass down decls");
     if (linkGlobalValueBody(*SGV))
       return true;
   }

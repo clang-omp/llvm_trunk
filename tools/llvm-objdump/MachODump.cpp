@@ -2999,8 +2999,8 @@ static void PrintSegmentCommand(uint32_t cmd, uint32_t cmdsize,
     outs() << "   vmaddr " << format("0x%016" PRIx64, vmaddr) << "\n";
     outs() << "   vmsize " << format("0x%016" PRIx64, vmsize) << "\n";
   } else {
-    outs() << "   vmaddr " << format("0x%08" PRIx32, vmaddr) << "\n";
-    outs() << "   vmsize " << format("0x%08" PRIx32, vmsize) << "\n";
+    outs() << "   vmaddr " << format("0x%08" PRIx64, vmaddr) << "\n";
+    outs() << "   vmsize " << format("0x%08" PRIx64, vmsize) << "\n";
   }
   outs() << "  fileoff " << fileoff;
   if (fileoff > object_size)
@@ -3103,8 +3103,8 @@ static void PrintSection(const char *sectname, const char *segname,
     outs() << "      addr " << format("0x%016" PRIx64, addr) << "\n";
     outs() << "      size " << format("0x%016" PRIx64, size);
   } else {
-    outs() << "      addr " << format("0x%08" PRIx32, addr) << "\n";
-    outs() << "      size " << format("0x%08" PRIx32, size);
+    outs() << "      addr " << format("0x%08" PRIx64, addr) << "\n";
+    outs() << "      size " << format("0x%08" PRIx64, size);
   }
   if ((flags & MachO::S_ZEROFILL) != 0 && offset + size > object_size)
     outs() << " (past end of file)\n";
@@ -3696,7 +3696,7 @@ static void PrintLoadCommands(const MachOObjectFile *Obj, uint32_t ncmds,
                           SLC.initprot, SLC.nsects, SLC.flags, Buf.size(),
                           verbose);
       for (unsigned j = 0; j < SLC.nsects; j++) {
-        MachO::section_64 S = Obj->getSection64(Command, j);
+        MachO::section S = Obj->getSection(Command, j);
         PrintSection(S.sectname, S.segname, S.addr, S.size, S.offset, S.align,
                      S.reloff, S.nreloc, S.flags, S.reserved1, S.reserved2,
                      SLC.cmd, sg_segname, filetype, Buf.size(), verbose);
