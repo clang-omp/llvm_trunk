@@ -139,6 +139,7 @@ public:
                                     StringRef StringValue = "");
   virtual void emitFPU(unsigned FPU);
   virtual void emitArch(unsigned Arch);
+  virtual void emitArchExtension(unsigned ArchExt);
   virtual void emitObjectArch(unsigned Arch);
   virtual void finishAttributeSection();
   virtual void emitInst(uint32_t Inst, char Suffix = '\0');
@@ -175,8 +176,8 @@ class MCStreamer {
   MCContext &Context;
   std::unique_ptr<MCTargetStreamer> TargetStreamer;
 
-  MCStreamer(const MCStreamer &) LLVM_DELETED_FUNCTION;
-  MCStreamer &operator=(const MCStreamer &) LLVM_DELETED_FUNCTION;
+  MCStreamer(const MCStreamer &) = delete;
+  MCStreamer &operator=(const MCStreamer &) = delete;
 
   std::vector<MCDwarfFrameInfo> DwarfFrameInfos;
   MCDwarfFrameInfo *getCurrentDwarfFrameInfo();
@@ -343,20 +344,12 @@ public:
     return true;
   }
 
-  /// SwitchSection - Set the current section where code is being emitted to
-  /// @p Section.  This is required to update CurSection.
+  /// Set the current section where code is being emitted to @p Section.  This
+  /// is required to update CurSection.
   ///
   /// This corresponds to assembler directives like .section, .text, etc.
   virtual void SwitchSection(const MCSection *Section,
-                             const MCExpr *Subsection = nullptr) {
-    assert(Section && "Cannot switch to a null section!");
-    MCSectionSubPair curSection = SectionStack.back().first;
-    SectionStack.back().second = curSection;
-    if (MCSectionSubPair(Section, Subsection) != curSection) {
-      SectionStack.back().first = MCSectionSubPair(Section, Subsection);
-      ChangeSection(Section, Subsection);
-    }
-  }
+                             const MCExpr *Subsection = nullptr);
 
   /// SwitchSectionNoChange - Set the current section where code is being
   /// emitted to @p Section.  This is required to update CurSection. This

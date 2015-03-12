@@ -12,11 +12,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "DIBuilderBindings.h"
-
 #include "IRBindings.h"
+#include "llvm/IR/DIBuilder.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
-#include "llvm/IR/DIBuilder.h"
 
 using namespace llvm;
 
@@ -144,6 +143,18 @@ LLVMMetadataRef LLVMDIBuilderCreateStructType(
       unwrapDI<DIDescriptor>(Scope), Name, unwrapDI<DIFile>(File), Line,
       SizeInBits, AlignInBits, Flags, unwrapDI<DIType>(DerivedFrom),
       unwrapDI<DIArray>(ElementTypes));
+  return wrap(CT);
+}
+
+LLVMMetadataRef LLVMDIBuilderCreateReplaceableCompositeType(
+    LLVMDIBuilderRef Dref, unsigned Tag, const char *Name,
+    LLVMMetadataRef Scope, LLVMMetadataRef File, unsigned Line,
+    unsigned RuntimeLang, uint64_t SizeInBits, uint64_t AlignInBits,
+    unsigned Flags) {
+  DIBuilder *D = unwrap(Dref);
+  DICompositeType CT = D->createReplaceableCompositeType(
+      Tag, Name, unwrapDI<DIDescriptor>(Scope), unwrapDI<DIFile>(File), Line,
+      RuntimeLang, SizeInBits, AlignInBits, Flags);
   return wrap(CT);
 }
 

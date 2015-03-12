@@ -920,15 +920,16 @@ relocation_iterator RuntimeDyldELF::processRelocationRef(
   SymbolRef::Type SymType = SymbolRef::ST_Unknown;
 
   // Search for the symbol in the global symbol table
-  SymbolTableMap::const_iterator gsi = GlobalSymbolTable.end();
+  RTDyldSymbolTable::const_iterator gsi = GlobalSymbolTable.end();
   if (Symbol != Obj.symbol_end()) {
     gsi = GlobalSymbolTable.find(TargetName.data());
     Symbol->getType(SymType);
   }
   if (gsi != GlobalSymbolTable.end()) {
-    Value.SectionID = gsi->second.first;
-    Value.Offset = gsi->second.second;
-    Value.Addend = gsi->second.second + Addend;
+    const auto &SymInfo = gsi->second;
+    Value.SectionID = SymInfo.getSectionID();
+    Value.Offset = SymInfo.getOffset();
+    Value.Addend = SymInfo.getOffset() + Addend;
   } else {
     switch (SymType) {
     case SymbolRef::ST_Debug: {
@@ -1127,7 +1128,7 @@ relocation_iterator RuntimeDyldELF::processRelocationRef(
           RangeOverflow = true;
         }
       }
-      if (SymType == SymbolRef::ST_Unknown || RangeOverflow == true) {
+      if (SymType == SymbolRef::ST_Unknown || RangeOverflow) {
         // It is an external symbol (SymbolRef::ST_Unknown) or within a range
         // larger than 24-bits.
         StubMap::const_iterator i = Stubs.find(Value);

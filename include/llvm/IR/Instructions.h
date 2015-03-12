@@ -17,8 +17,8 @@
 #define LLVM_IR_INSTRUCTIONS_H
 
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/iterator_range.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/iterator_range.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -285,7 +285,7 @@ private:
 /// StoreInst - an instruction for storing to memory
 ///
 class StoreInst : public Instruction {
-  void *operator new(size_t, unsigned) LLVM_DELETED_FUNCTION;
+  void *operator new(size_t, unsigned) = delete;
   void AssertOK();
 protected:
   StoreInst *clone_impl() const override;
@@ -411,7 +411,7 @@ DEFINE_TRANSPARENT_OPERAND_ACCESSORS(StoreInst, Value)
 /// FenceInst - an instruction for ordering other memory operations
 ///
 class FenceInst : public Instruction {
-  void *operator new(size_t, unsigned) LLVM_DELETED_FUNCTION;
+  void *operator new(size_t, unsigned) = delete;
   void Init(AtomicOrdering Ordering, SynchronizationScope SynchScope);
 protected:
   FenceInst *clone_impl() const override;
@@ -478,7 +478,7 @@ private:
 /// there.  Returns the value that was loaded.
 ///
 class AtomicCmpXchgInst : public Instruction {
-  void *operator new(size_t, unsigned) LLVM_DELETED_FUNCTION;
+  void *operator new(size_t, unsigned) = delete;
   void Init(Value *Ptr, Value *Cmp, Value *NewVal,
             AtomicOrdering SuccessOrdering, AtomicOrdering FailureOrdering,
             SynchronizationScope SynchScope);
@@ -634,7 +634,7 @@ DEFINE_TRANSPARENT_OPERAND_ACCESSORS(AtomicCmpXchgInst, Value)
 /// the old value.
 ///
 class AtomicRMWInst : public Instruction {
-  void *operator new(size_t, unsigned) LLVM_DELETED_FUNCTION;
+  void *operator new(size_t, unsigned) = delete;
 protected:
   AtomicRMWInst *clone_impl() const override;
 public:
@@ -843,6 +843,13 @@ public:
   // getType - Overload to return most specific sequential type.
   SequentialType *getType() const {
     return cast<SequentialType>(Instruction::getType());
+  }
+
+  Type *getSourceElementType() const {
+    SequentialType *Ty = cast<SequentialType>(getPointerOperandType());
+    if (VectorType *VTy = dyn_cast<VectorType>(Ty))
+      Ty = cast<SequentialType>(VTy->getElementType());
+    return Ty->getElementType();
   }
 
   /// \brief Returns the address space of this instruction's pointer type.
@@ -1194,10 +1201,14 @@ public:
 
   /// @returns true if the predicate of this instruction is EQ or NE.
   /// \brief Determine if this is an equality predicate.
-  bool isEquality() const {
-    return getPredicate() == FCMP_OEQ || getPredicate() == FCMP_ONE ||
-           getPredicate() == FCMP_UEQ || getPredicate() == FCMP_UNE;
+  static bool isEquality(Predicate Pred) {
+    return Pred == FCMP_OEQ || Pred == FCMP_ONE || Pred == FCMP_UEQ ||
+           Pred == FCMP_UNE;
   }
+
+  /// @returns true if the predicate of this instruction is EQ or NE.
+  /// \brief Determine if this is an equality predicate.
+  bool isEquality() const { return isEquality(getPredicate()); }
 
   /// @returns true if the predicate of this instruction is commutative.
   /// \brief Determine if this is a commutative predicate.
@@ -1374,6 +1385,9 @@ public:
 
   /// removeAttribute - removes the attribute from the list of attributes.
   void removeAttribute(unsigned i, Attribute attr);
+
+  /// \brief adds the dereferenceable attribute to the list of attributes.
+  void addDereferenceableAttr(unsigned i, uint64_t Bytes);
 
   /// \brief Determine whether this call has the given attribute.
   bool hasFnAttr(Attribute::AttrKind A) const {
@@ -1898,6 +1912,9 @@ public:
   typedef const unsigned* idx_iterator;
   inline idx_iterator idx_begin() const { return Indices.begin(); }
   inline idx_iterator idx_end()   const { return Indices.end(); }
+  inline iterator_range<idx_iterator> indices() const {
+    return iterator_range<idx_iterator>(idx_begin(), idx_end());
+  }
 
   Value *getAggregateOperand() {
     return getOperand(0);
@@ -1958,7 +1975,7 @@ ExtractValueInst::ExtractValueInst(Value *Agg,
 class InsertValueInst : public Instruction {
   SmallVector<unsigned, 4> Indices;
 
-  void *operator new(size_t, unsigned) LLVM_DELETED_FUNCTION;
+  void *operator new(size_t, unsigned) = delete;
   InsertValueInst(const InsertValueInst &IVI);
   void init(Value *Agg, Value *Val, ArrayRef<unsigned> Idxs,
             const Twine &NameStr);
@@ -2009,6 +2026,9 @@ public:
   typedef const unsigned* idx_iterator;
   inline idx_iterator idx_begin() const { return Indices.begin(); }
   inline idx_iterator idx_end()   const { return Indices.end(); }
+  inline iterator_range<idx_iterator> indices() const {
+    return iterator_range<idx_iterator>(idx_begin(), idx_end());
+  }
 
   Value *getAggregateOperand() {
     return getOperand(0);
@@ -2088,7 +2108,7 @@ DEFINE_TRANSPARENT_OPERAND_ACCESSORS(InsertValueInst, Value)
 // scientist's overactive imagination.
 //
 class PHINode : public Instruction {
-  void *operator new(size_t, unsigned) LLVM_DELETED_FUNCTION;
+  void *operator new(size_t, unsigned) = delete;
   /// ReservedSpace - The number of operands actually allocated.  NumOperands is
   /// the number actually in use.
   unsigned ReservedSpace;
@@ -2162,6 +2182,8 @@ public:
   const_block_iterator block_end() const {
     return block_begin() + getNumOperands();
   }
+
+  op_range incoming_values() { return operands(); }
 
   /// getNumIncomingValues - Return the number of incoming edges
   ///
@@ -2295,7 +2317,7 @@ class LandingPadInst : public Instruction {
 public:
   enum ClauseType { Catch, Filter };
 private:
-  void *operator new(size_t, unsigned) LLVM_DELETED_FUNCTION;
+  void *operator new(size_t, unsigned) = delete;
   // Allocate space for exactly zero operands.
   void *operator new(size_t s) {
     return User::operator new(s, 0);
@@ -2562,7 +2584,7 @@ DEFINE_TRANSPARENT_OPERAND_ACCESSORS(BranchInst, Value)
 /// SwitchInst - Multiway switch
 ///
 class SwitchInst : public TerminatorInst {
-  void *operator new(size_t, unsigned) LLVM_DELETED_FUNCTION;
+  void *operator new(size_t, unsigned) = delete;
   unsigned ReservedSpace;
   // Operand[0]    = Value to switch on
   // Operand[1]    = Default basic block destination
@@ -2871,7 +2893,7 @@ DEFINE_TRANSPARENT_OPERAND_ACCESSORS(SwitchInst, Value)
 /// IndirectBrInst - Indirect Branch Instruction.
 ///
 class IndirectBrInst : public TerminatorInst {
-  void *operator new(size_t, unsigned) LLVM_DELETED_FUNCTION;
+  void *operator new(size_t, unsigned) = delete;
   unsigned ReservedSpace;
   // Operand[0]    = Value to switch on
   // Operand[1]    = Default basic block destination
@@ -3055,6 +3077,9 @@ public:
 
   /// removeAttribute - removes the attribute from the list of attributes.
   void removeAttribute(unsigned i, Attribute attr);
+
+  /// \brief removes the dereferenceable attribute to the list of attributes.
+  void addDereferenceableAttr(unsigned i, uint64_t Bytes);
 
   /// \brief Determine whether this call has the given attribute.
   bool hasFnAttr(Attribute::AttrKind A) const {
@@ -3296,7 +3321,7 @@ DEFINE_TRANSPARENT_OPERAND_ACCESSORS(ResumeInst, Value)
 /// end of the block cannot be reached.
 ///
 class UnreachableInst : public TerminatorInst {
-  void *operator new(size_t, unsigned) LLVM_DELETED_FUNCTION;
+  void *operator new(size_t, unsigned) = delete;
 protected:
   UnreachableInst *clone_impl() const override;
 

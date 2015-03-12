@@ -21,11 +21,13 @@
 #ifndef LLVM_TOOLS_DSYMUTIL_DEBUGMAP_H
 #define LLVM_TOOLS_DSYMUTIL_DEBUGMAP_H
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/Triple.h"
+#include "llvm/ADT/iterator_range.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/Format.h"
-#include "llvm/ADT/iterator_range.h"
 #include <vector>
 
 namespace llvm {
@@ -60,10 +62,13 @@ class DebugMapObject;
 ///     }
 /// }
 class DebugMap {
+  Triple BinaryTriple;
   typedef std::vector<std::unique_ptr<DebugMapObject>> ObjectContainer;
   ObjectContainer Objects;
 
 public:
+  DebugMap(const Triple &BinaryTriple) : BinaryTriple(BinaryTriple) {}
+
   typedef ObjectContainer::const_iterator const_iterator;
 
   iterator_range<const_iterator> objects() const {
@@ -77,6 +82,8 @@ public:
   /// This function adds an DebugMapObject to the list owned by this
   /// debug map.
   DebugMapObject &addDebugMapObject(StringRef ObjectFilePath);
+
+  const Triple &getTriple() const { return BinaryTriple; }
 
   void print(raw_ostream &OS) const;
 
@@ -98,6 +105,8 @@ public:
         : ObjectAddress(ObjectAddress), BinaryAddress(BinaryAddress) {}
   };
 
+  typedef StringMapEntry<SymbolMapping> DebugMapEntry;
+
   /// \brief Adds a symbol mapping to this DebugMapObject.
   /// \returns false if the symbol was already registered. The request
   /// is discarded in this case.
@@ -106,7 +115,11 @@ public:
 
   /// \brief Lookup a symbol mapping.
   /// \returns null if the symbol isn't found.
-  const SymbolMapping *lookupSymbol(StringRef SymbolName) const;
+  const DebugMapEntry *lookupSymbol(StringRef SymbolName) const;
+
+  /// \brief Lookup an objectfile address.
+  /// \returns null if the address isn't found.
+  const DebugMapEntry *lookupObjectAddress(uint64_t Address) const;
 
   llvm::StringRef getObjectFilename() const { return Filename; }
 
@@ -121,6 +134,7 @@ private:
 
   std::string Filename;
   StringMap<SymbolMapping> Symbols;
+  DenseMap<uint64_t, DebugMapEntry *> AddressToMapping;
 };
 }
 }

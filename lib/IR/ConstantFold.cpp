@@ -956,12 +956,18 @@ Constant *llvm::ConstantFoldBinaryInstruction(unsigned Opcode,
       // X >>l undef -> undef
       if (isa<UndefValue>(C2))
         return C2;
+      // undef >>l 0 -> undef
+      if (match(C2, m_Zero()))
+        return C1;
       // undef >>l X -> 0
       return Constant::getNullValue(C1->getType());
     case Instruction::AShr:
       // X >>a undef -> undef
       if (isa<UndefValue>(C2))
         return C2;
+      // undef >>a 0 -> undef
+      if (match(C2, m_Zero()))
+        return C1;
       // TODO: undef >>a X -> undef if the shift is exact
       // undef >>a X -> 0
       return Constant::getNullValue(C1->getType());
@@ -969,6 +975,9 @@ Constant *llvm::ConstantFoldBinaryInstruction(unsigned Opcode,
       // X << undef -> undef
       if (isa<UndefValue>(C2))
         return C2;
+      // undef << 0 -> undef
+      if (match(C2, m_Zero()))
+        return C1;
       // undef << X -> 0
       return Constant::getNullValue(C1->getType());
     }
@@ -1273,15 +1282,17 @@ static int IdxCompare(Constant *C1, Constant *C2, Type *ElTy) {
   if (!isa<ConstantInt>(C1) || !isa<ConstantInt>(C2))
     return -2; // don't know!
 
+  // We cannot compare the indices if they don't fit in an int64_t.
+  if (cast<ConstantInt>(C1)->getValue().getActiveBits() > 64 ||
+      cast<ConstantInt>(C2)->getValue().getActiveBits() > 64)
+    return -2; // don't know!
+
   // Ok, we have two differing integer indices.  Sign extend them to be the same
-  // type.  Long is always big enough, so we use it.
-  if (!C1->getType()->isIntegerTy(64))
-    C1 = ConstantExpr::getSExt(C1, Type::getInt64Ty(C1->getContext()));
+  // type.
+  int64_t C1Val = cast<ConstantInt>(C1)->getSExtValue();
+  int64_t C2Val = cast<ConstantInt>(C2)->getSExtValue();
 
-  if (!C2->getType()->isIntegerTy(64))
-    C2 = ConstantExpr::getSExt(C2, Type::getInt64Ty(C1->getContext()));
-
-  if (C1 == C2) return 0;  // They are equal
+  if (C1Val == C2Val) return 0;  // They are equal
 
   // If the type being indexed over is really just a zero sized type, there is
   // no pointer difference being made here.
@@ -1290,8 +1301,7 @@ static int IdxCompare(Constant *C1, Constant *C2, Type *ElTy) {
 
   // If they are really different, now that they are the same type, then we
   // found a difference!
-  if (cast<ConstantInt>(C1)->getSExtValue() < 
-      cast<ConstantInt>(C2)->getSExtValue())
+  if (C1Val < C2Val)
     return -1;
   else
     return 1;
@@ -1317,7 +1327,7 @@ static FCmpInst::Predicate evaluateFCmpRelation(Constant *V1, Constant *V2) {
 
   if (!isa<ConstantExpr>(V1)) {
     if (!isa<ConstantExpr>(V2)) {
-      // We distilled thisUse the standard constant folder for a few cases
+      // Simple case, use the standard constant folder.
       ConstantInt *R = nullptr;
       R = dyn_cast<ConstantInt>(
                       ConstantExpr::getFCmp(FCmpInst::FCMP_OEQ, V1, V2));
@@ -1655,15 +1665,22 @@ Constant *llvm::ConstantFoldCompareInstruction(unsigned short pred,
 
   // Handle some degenerate cases first
   if (isa<UndefValue>(C1) || isa<UndefValue>(C2)) {
+    CmpInst::Predicate Predicate = CmpInst::Predicate(pred);
+    bool isIntegerPredicate = ICmpInst::isIntPredicate(Predicate);
     // For EQ and NE, we can always pick a value for the undef to make the
     // predicate pass or fail, so we can return undef.
-    // Also, if both operands are undef, we can return undef.
-    if (ICmpInst::isEquality(ICmpInst::Predicate(pred)) ||
-        (isa<UndefValue>(C1) && isa<UndefValue>(C2)))
+    // Also, if both operands are undef, we can return undef for int comparison.
+    if (ICmpInst::isEquality(Predicate) || (isIntegerPredicate && C1 == C2))
       return UndefValue::get(ResultTy);
-    // Otherwise, pick the same value as the non-undef operand, and fold
-    // it to true or false.
-    return ConstantInt::get(ResultTy, CmpInst::isTrueWhenEqual(pred));
+
+    // Otherwise, for integer compare, pick the same value as the non-undef
+    // operand, and fold it to true or false.
+    if (isIntegerPredicate)
+      return ConstantInt::get(ResultTy, CmpInst::isTrueWhenEqual(pred));
+
+    // Choosing NaN for the undef will always make unordered comparison succeed
+    // and ordered comparison fails.
+    return ConstantInt::get(ResultTy, CmpInst::isUnordered(Predicate));
   }
 
   // icmp eq/ne(null,GV) -> false/true
@@ -1779,7 +1796,10 @@ Constant *llvm::ConstantFoldCompareInstruction(unsigned short pred,
     return ConstantVector::get(ResElts);
   }
 
-  if (C1->getType()->isFloatingPointTy()) {
+  if (C1->getType()->isFloatingPointTy() &&
+      // Only call evaluateFCmpRelation if we have a constant expr to avoid
+      // infinite recursive loop
+      (isa<ConstantExpr>(C1) || isa<ConstantExpr>(C2))) {
     int Result = -1;  // -1 = unknown, 0 = known false, 1 = known true.
     switch (evaluateFCmpRelation(C1, C2)) {
     default: llvm_unreachable("Unknown relation!");
@@ -2069,8 +2089,7 @@ static Constant *ConstantFoldGetElementPtrImpl(Constant *C,
       if (PerformFold) {
         SmallVector<Value*, 16> NewIndices;
         NewIndices.reserve(Idxs.size() + CE->getNumOperands());
-        for (unsigned i = 1, e = CE->getNumOperands()-1; i != e; ++i)
-          NewIndices.push_back(CE->getOperand(i));
+        NewIndices.append(CE->op_begin() + 1, CE->op_end() - 1);
 
         // Add the last index of the source with the first index of the new GEP.
         // Make sure to handle the case when they are actually different types.
@@ -2079,9 +2098,15 @@ static Constant *ConstantFoldGetElementPtrImpl(Constant *C,
         if (!Idx0->isNullValue()) {
           Type *IdxTy = Combined->getType();
           if (IdxTy != Idx0->getType()) {
-            Type *Int64Ty = Type::getInt64Ty(IdxTy->getContext());
-            Constant *C1 = ConstantExpr::getSExtOrBitCast(Idx0, Int64Ty);
-            Constant *C2 = ConstantExpr::getSExtOrBitCast(Combined, Int64Ty);
+            unsigned CommonExtendedWidth =
+                std::max(IdxTy->getIntegerBitWidth(),
+                         Idx0->getType()->getIntegerBitWidth());
+            CommonExtendedWidth = std::max(CommonExtendedWidth, 64U);
+
+            Type *CommonTy =
+                Type::getIntNTy(IdxTy->getContext(), CommonExtendedWidth);
+            Constant *C1 = ConstantExpr::getSExtOrBitCast(Idx0, CommonTy);
+            Constant *C2 = ConstantExpr::getSExtOrBitCast(Combined, CommonTy);
             Combined = ConstantExpr::get(Instruction::Add, C1, C2);
           } else {
             Combined =
@@ -2154,14 +2179,20 @@ static Constant *ConstantFoldGetElementPtrImpl(Constant *C,
             Constant *PrevIdx = cast<Constant>(Idxs[i-1]);
             Constant *Div = ConstantExpr::getSDiv(CI, Factor);
 
+            unsigned CommonExtendedWidth =
+                std::max(PrevIdx->getType()->getIntegerBitWidth(),
+                         Div->getType()->getIntegerBitWidth());
+            CommonExtendedWidth = std::max(CommonExtendedWidth, 64U);
+
             // Before adding, extend both operands to i64 to avoid
             // overflow trouble.
-            if (!PrevIdx->getType()->isIntegerTy(64))
-              PrevIdx = ConstantExpr::getSExt(PrevIdx,
-                                           Type::getInt64Ty(Div->getContext()));
-            if (!Div->getType()->isIntegerTy(64))
-              Div = ConstantExpr::getSExt(Div,
-                                          Type::getInt64Ty(Div->getContext()));
+            if (!PrevIdx->getType()->isIntegerTy(CommonExtendedWidth))
+              PrevIdx = ConstantExpr::getSExt(
+                  PrevIdx,
+                  Type::getIntNTy(Div->getContext(), CommonExtendedWidth));
+            if (!Div->getType()->isIntegerTy(CommonExtendedWidth))
+              Div = ConstantExpr::getSExt(
+                  Div, Type::getIntNTy(Div->getContext(), CommonExtendedWidth));
 
             NewIdxs[i-1] = ConstantExpr::getAdd(PrevIdx, Div);
           } else {

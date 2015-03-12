@@ -39,6 +39,7 @@ MCAsmInfo::MCAsmInfo() {
   CommentString = "#";
   LabelSuffix = ":";
   UseAssignmentForEHBegin = false;
+  NeedsLocalForSize = false;
   PrivateGlobalPrefix = "L";
   PrivateLabelPrefix = PrivateGlobalPrefix;
   LinkerPrivateGlobalPrefix = "";
@@ -68,6 +69,7 @@ MCAsmInfo::MCAsmInfo() {
   HasAggressiveSymbolFolding = true;
   COMMDirectiveAlignmentIsInBytes = true;
   LCOMMDirectiveAlignmentType = LCOMM::NoAlignment;
+  HasFunctionAlignment = true;
   HasDotTypeDotSizeDirective = true;
   HasSingleParameterDotFile = true;
   HasIdentDirective = false;
@@ -107,6 +109,10 @@ MCAsmInfo::MCAsmInfo() {
 }
 
 MCAsmInfo::~MCAsmInfo() {
+}
+
+bool MCAsmInfo::isSectionAtomizableBySymbols(const MCSection &Section) const {
+  return false;
 }
 
 const MCExpr *

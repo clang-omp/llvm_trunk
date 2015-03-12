@@ -22,6 +22,13 @@
 namespace llvm {
 
 class ARMBaseTargetMachine : public LLVMTargetMachine {
+public:
+  enum ARMABI {
+    ARM_ABI_UNKNOWN,
+    ARM_ABI_APCS,
+    ARM_ABI_AAPCS // ARM EABI
+  } TargetABI;
+
 protected:
   std::unique_ptr<TargetLoweringObjectFile> TLOF;
   ARMSubtarget        Subtarget;
@@ -39,9 +46,10 @@ public:
 
   const ARMSubtarget *getSubtargetImpl() const override { return &Subtarget; }
   const ARMSubtarget *getSubtargetImpl(const Function &F) const override;
+  bool isLittleEndian() const { return isLittle; }
 
-  /// \brief Register ARM analysis passes with a pass manager.
-  void addAnalysisPasses(PassManagerBase &PM) override;
+  /// \brief Get the TargetIRAnalysis for this target.
+  TargetIRAnalysis getTargetIRAnalysis() override;
 
   // Pass Pipeline Configuration
   TargetPassConfig *createPassConfig(PassManagerBase &PM) override;

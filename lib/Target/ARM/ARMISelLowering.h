@@ -232,7 +232,8 @@ namespace llvm {
 
   class ARMTargetLowering : public TargetLowering {
   public:
-    explicit ARMTargetLowering(const TargetMachine &TM);
+    explicit ARMTargetLowering(const TargetMachine &TM,
+                               const ARMSubtarget &STI);
 
     unsigned getJumpTableEncoding() const override;
 
@@ -281,6 +282,8 @@ namespace llvm {
 
     using TargetLowering::isZExtFree;
     bool isZExtFree(SDValue Val, EVT VT2) const override;
+
+    bool isVectorLoadExtDesirable(SDValue ExtVal) const override;
 
     bool allowTruncateForTailCall(Type *Ty1, Type *Ty2) const override;
 
@@ -332,9 +335,10 @@ namespace llvm {
     ConstraintWeight getSingleConstraintMatchWeight(
       AsmOperandInfo &info, const char *constraint) const override;
 
-    std::pair<unsigned, const TargetRegisterClass*>
-      getRegForInlineAsmConstraint(const std::string &Constraint,
-                                   MVT VT) const override;
+    std::pair<unsigned, const TargetRegisterClass *>
+    getRegForInlineAsmConstraint(const TargetRegisterInfo *TRI,
+                                 const std::string &Constraint,
+                                 MVT VT) const override;
 
     /// LowerAsmOperandForConstraint - Lower the specified operand into the Ops
     /// vector.  If it is invalid, don't add anything to Ops. If hasMemory is
@@ -351,10 +355,6 @@ namespace llvm {
     /// getRegClassFor - Return the register class that should be used for the
     /// specified value type.
     const TargetRegisterClass *getRegClassFor(MVT VT) const override;
-
-    /// getMaximalGlobalOffset - Returns the maximal possible offset which can
-    /// be used for loads / stores from the global.
-    unsigned getMaximalGlobalOffset() const override;
 
     /// Returns true if a cast between SrcAS and DestAS is a noop.
     bool isNoopAddrSpaceCast(unsigned SrcAS, unsigned DestAS) const override {
@@ -406,7 +406,8 @@ namespace llvm {
 
     bool shouldExpandAtomicLoadInIR(LoadInst *LI) const override;
     bool shouldExpandAtomicStoreInIR(StoreInst *SI) const override;
-    bool shouldExpandAtomicRMWInIR(AtomicRMWInst *AI) const override;
+    TargetLoweringBase::AtomicRMWExpansionKind
+    shouldExpandAtomicRMWInIR(AtomicRMWInst *AI) const override;
 
     bool useLoadStackGuardNode() const override;
 
@@ -414,8 +415,9 @@ namespace llvm {
                                    unsigned &Cost) const override;
 
   protected:
-    std::pair<const TargetRegisterClass*, uint8_t>
-    findRepresentativeClass(MVT VT) const override;
+    std::pair<const TargetRegisterClass *, uint8_t>
+    findRepresentativeClass(const TargetRegisterInfo *TRI,
+                            MVT VT) const override;
 
   private:
     /// Subtarget - Keep a pointer to the ARMSubtarget around so that we can
@@ -526,24 +528,14 @@ namespace llvm {
                        SDLoc dl, SDValue &Chain,
                        const Value *OrigArg,
                        unsigned InRegsParamRecordIdx,
-                       unsigned OffsetFromOrigArg,
-                       unsigned ArgOffset,
-                       unsigned ArgSize,
-                       bool ForceMutable,
-                       unsigned ByValStoreOffset,
-                       unsigned TotalArgRegsSaveSize) const;
+                       int ArgOffset,
+                       unsigned ArgSize) const;
 
     void VarArgStyleRegisters(CCState &CCInfo, SelectionDAG &DAG,
                               SDLoc dl, SDValue &Chain,
                               unsigned ArgOffset,
                               unsigned TotalArgRegsSaveSize,
                               bool ForceMutable = false) const;
-
-    void computeRegArea(CCState &CCInfo, MachineFunction &MF,
-                        unsigned InRegsParamRecordIdx,
-                        unsigned ArgSize,
-                        unsigned &ArgRegsSize,
-                        unsigned &ArgRegsSaveSize) const;
 
     SDValue
       LowerCall(TargetLowering::CallLoweringInfo &CLI,

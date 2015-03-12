@@ -1,4 +1,4 @@
-; RUN: llc -march=r600 -mcpu=SI -verify-machineinstrs < %s | FileCheck -check-prefix=SI -check-prefix=FUNC %s
+; RUN: llc -march=amdgcn -mcpu=SI -verify-machineinstrs < %s | FileCheck -check-prefix=SI -check-prefix=FUNC %s
 ; RUN: llc -march=r600 -mcpu=cayman -verify-machineinstrs < %s | FileCheck -check-prefix=EG -check-prefix=FUNC %s
 ; RUN: llc -march=r600 -mcpu=redwood -verify-machineinstrs < %s | FileCheck -check-prefix=EG -check-prefix=FUNC %s
 ; XUN: llc -march=r600 -mcpu=r600 -verify-machineinstrs < %s | FileCheck -check-prefix=R600 -check-prefix=FUNC %s
@@ -25,12 +25,12 @@ define void @test_umad24(i32 addrspace(1)* %out, i32 %src0, i32 %src1, i32 %src2
 ; SI: buffer_store_dword [[RESULT]]
 define void @commute_umad24(i32 addrspace(1)* %out, i32 addrspace(1)* %in) nounwind {
   %tid = call i32 @llvm.r600.read.tidig.x() nounwind readnone
-  %out.gep = getelementptr i32 addrspace(1)* %out, i32 %tid
-  %src0.gep = getelementptr i32 addrspace(1)* %out, i32 %tid
-  %src2.gep = getelementptr i32 addrspace(1)* %src0.gep, i32 1
+  %out.gep = getelementptr i32, i32 addrspace(1)* %out, i32 %tid
+  %src0.gep = getelementptr i32, i32 addrspace(1)* %out, i32 %tid
+  %src2.gep = getelementptr i32, i32 addrspace(1)* %src0.gep, i32 1
 
-  %src0 = load i32 addrspace(1)* %src0.gep, align 4
-  %src2 = load i32 addrspace(1)* %src2.gep, align 4
+  %src0 = load i32, i32 addrspace(1)* %src0.gep, align 4
+  %src2 = load i32, i32 addrspace(1)* %src2.gep, align 4
   %mad = call i32 @llvm.AMDGPU.umad24(i32 %src0, i32 4, i32 %src2) nounwind readnone
   store i32 %mad, i32 addrspace(1)* %out.gep, align 4
   ret void

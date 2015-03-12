@@ -8,9 +8,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "MCTargetDesc/HexagonBaseInfo.h"
-#include "MCTargetDesc/HexagonMCInst.h"
+#include "MCTargetDesc/HexagonMCInstrInfo.h"
 #include "MCTargetDesc/HexagonMCTargetDesc.h"
-
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCDisassembler.h"
 #include "llvm/MC/MCExpr.h"
@@ -19,14 +18,13 @@
 #include "llvm/MC/MCInstrDesc.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/Endian.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LEB128.h"
-#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/TargetRegistry.h"
-#include "llvm/Support/Endian.h"
-
-#include <vector>
+#include "llvm/Support/raw_ostream.h"
 #include <array>
+#include <vector>
 
 using namespace llvm;
 
@@ -48,6 +46,13 @@ public:
                               raw_ostream &CStream) const override;
 };
 }
+
+static DecodeStatus DecodeModRegsRegisterClass(MCInst &Inst, unsigned RegNo,
+  uint64_t Address, const void *Decoder);
+static DecodeStatus DecodeCtrRegsRegisterClass(MCInst &Inst, unsigned RegNo,
+  uint64_t Address, const void *Decoder);
+static DecodeStatus DecodeCtrRegs64RegisterClass(MCInst &Inst, unsigned RegNo,
+                                   uint64_t Address, void const *Decoder);
 
 static const uint16_t IntRegDecoderTable[] = {
   Hexagon::R0, Hexagon::R1, Hexagon::R2, Hexagon::R3, Hexagon::R4,
@@ -78,6 +83,67 @@ static DecodeStatus DecodeIntRegsRegisterClass(MCInst &Inst, unsigned RegNo,
     return MCDisassembler::Fail;
 
   unsigned Register = IntRegDecoderTable[RegNo];
+  Inst.addOperand(MCOperand::CreateReg(Register));
+  return MCDisassembler::Success;
+}
+
+static DecodeStatus DecodeCtrRegsRegisterClass(MCInst &Inst, unsigned RegNo,
+  uint64_t /*Address*/, const void *Decoder) {
+  static const uint16_t CtrlRegDecoderTable[] = {
+    Hexagon::SA0, Hexagon::LC0, Hexagon::SA1, Hexagon::LC1,
+    Hexagon::P3_0, Hexagon::NoRegister, Hexagon::C6, Hexagon::C7,
+    Hexagon::USR, Hexagon::PC, Hexagon::UGP, Hexagon::GP,
+    Hexagon::CS0, Hexagon::CS1, Hexagon::UPCL, Hexagon::UPCH
+  };
+
+  if (RegNo >= sizeof(CtrlRegDecoderTable) / sizeof(CtrlRegDecoderTable[0]))
+    return MCDisassembler::Fail;
+
+  if (CtrlRegDecoderTable[RegNo] == Hexagon::NoRegister)
+    return MCDisassembler::Fail;
+
+  unsigned Register = CtrlRegDecoderTable[RegNo];
+  Inst.addOperand(MCOperand::CreateReg(Register));
+  return MCDisassembler::Success;
+}
+
+static DecodeStatus DecodeCtrRegs64RegisterClass(MCInst &Inst, unsigned RegNo,
+                                   uint64_t /*Address*/, void const *Decoder) {
+  static const uint16_t CtrlReg64DecoderTable[] = {
+    Hexagon::C1_0, Hexagon::NoRegister,
+    Hexagon::C3_2, Hexagon::NoRegister,
+    Hexagon::NoRegister, Hexagon::NoRegister,
+    Hexagon::C7_6, Hexagon::NoRegister,
+    Hexagon::C9_8, Hexagon::NoRegister,
+    Hexagon::C11_10, Hexagon::NoRegister,
+    Hexagon::CS, Hexagon::NoRegister,
+    Hexagon::UPC, Hexagon::NoRegister
+  };
+
+  if (RegNo >= sizeof(CtrlReg64DecoderTable) / sizeof(CtrlReg64DecoderTable[0]))
+    return MCDisassembler::Fail;
+
+  if (CtrlReg64DecoderTable[RegNo] == Hexagon::NoRegister)
+    return MCDisassembler::Fail;
+
+  unsigned Register = CtrlReg64DecoderTable[RegNo];
+  Inst.addOperand(MCOperand::CreateReg(Register));
+  return MCDisassembler::Success;
+}
+
+static DecodeStatus DecodeModRegsRegisterClass(MCInst &Inst, unsigned RegNo,
+  uint64_t /*Address*/, const void *Decoder) {
+  unsigned Register = 0;
+  switch (RegNo) {
+  case 0:
+    Register = Hexagon::M0;
+    break;
+  case 1:
+    Register = Hexagon::M1;
+    break;
+  default:
+    return MCDisassembler::Fail;
+  }
   Inst.addOperand(MCOperand::CreateReg(Register));
   return MCDisassembler::Success;
 }
@@ -136,6 +202,6 @@ DecodeStatus HexagonDisassembler::getInstruction(MCInst &MI, uint64_t &Size,
   // Remove parse bits.
   insn &= ~static_cast<uint32_t>(HexagonII::InstParseBits::INST_PARSE_MASK);
   DecodeStatus Result = decodeInstruction(DecoderTable32, MI, insn, Address, this, STI);
-  HexagonMCInst::AppendImplicitOperands(MI);
+  HexagonMCInstrInfo::AppendImplicitOperands(MI);
   return Result;
 }

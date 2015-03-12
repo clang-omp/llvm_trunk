@@ -19,14 +19,14 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/DebugLoc.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/ValueHandle.h"
-#include <utility>
 #include <unordered_map>
+#include <utility>
 namespace llvm {
 
 class MachineInstr;
@@ -180,9 +180,11 @@ public:
     return I != AbstractScopeMap.end() ? &I->second : nullptr;
   }
 
-  /// findInlinedScope - Find an inlined scope for the given DebugLoc or return
-  /// NULL.
-  LexicalScope *findInlinedScope(DebugLoc DL);
+  /// findInlinedScope - Find an inlined scope for the given scope/inlined-at.
+  LexicalScope *findInlinedScope(const MDNode *N, const MDNode *IA) {
+    auto I = InlinedLexicalScopeMap.find(std::make_pair(N, IA));
+    return I != InlinedLexicalScopeMap.end() ? &I->second : nullptr;
+  }
 
   /// findLexicalScope - Find regular lexical scope or return null.
   LexicalScope *findLexicalScope(const MDNode *N) {

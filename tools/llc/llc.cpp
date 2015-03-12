@@ -14,18 +14,20 @@
 //===----------------------------------------------------------------------===//
 
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Triple.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/CodeGen/CommandFlags.h"
 #include "llvm/CodeGen/LinkAllAsmWriterComponents.h"
 #include "llvm/CodeGen/LinkAllCodegenComponents.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/IRPrintingPasses.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/MC/SubtargetFeature.h"
 #include "llvm/Pass.h"
-#include "llvm/PassManager.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FileSystem.h"
@@ -39,7 +41,6 @@
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/ToolOutputFile.h"
-#include "llvm/Target/TargetLibraryInfo.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetSubtargetInfo.h"
 #include <memory>
@@ -293,18 +294,19 @@ static int compileModule(char **argv, LLVMContext &Context) {
   if (!Out) return 1;
 
   // Build up all of the passes that we want to do to the module.
-  PassManager PM;
+  legacy::PassManager PM;
 
   // Add an appropriate TargetLibraryInfo pass for the module's triple.
-  TargetLibraryInfo *TLI = new TargetLibraryInfo(TheTriple);
+  TargetLibraryInfoImpl TLII(Triple(M->getTargetTriple()));
+
+  // The -disable-simplify-libcalls flag actually disables all builtin optzns.
   if (DisableSimplifyLibCalls)
-    TLI->disableAllFunctions();
-  PM.add(TLI);
+    TLII.disableAllFunctions();
+  PM.add(new TargetLibraryInfoWrapperPass(TLII));
 
   // Add the target data from the target machine, if it exists, or the module.
-  if (const DataLayout *DL = Target->getSubtargetImpl()->getDataLayout())
-    M->setDataLayout(DL);
-  PM.add(new DataLayoutPass());
+  if (const DataLayout *DL = Target->getDataLayout())
+    M->setDataLayout(*DL);
 
   if (RelaxAll.getNumOccurrences() > 0 &&
       FileType != TargetMachine::CGFT_ObjectFile)

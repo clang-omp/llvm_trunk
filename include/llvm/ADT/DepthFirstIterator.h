@@ -33,10 +33,10 @@
 #ifndef LLVM_ADT_DEPTHFIRSTITERATOR_H
 #define LLVM_ADT_DEPTHFIRSTITERATOR_H
 
-#include "llvm/ADT/iterator_range.h"
 #include "llvm/ADT/GraphTraits.h"
 #include "llvm/ADT/PointerIntPair.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/iterator_range.h"
 #include <set>
 #include <vector>
 
@@ -113,9 +113,8 @@ private:
       while (It != GT::child_end(Node)) {
         NodeType *Next = *It++;
         // Has our next sibling been visited?
-        if (Next && !this->Visited.count(Next)) {  
+        if (Next && this->Visited.insert(Next).second) {
           // No, do it now.
-          this->Visited.insert(Next);
           VisitStack.push_back(std::make_pair(PointerIntTy(Next, 0), 
                                               GT::child_begin(Next)));
           return;

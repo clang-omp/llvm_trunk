@@ -22,7 +22,6 @@
 #include "llvm/IR/GVMaterializer.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/LLVMContext.h"
-#include "llvm/IR/LeakDetector.h"
 #include "llvm/IR/TypeFinder.h"
 #include "llvm/Support/Dwarf.h"
 #include "llvm/Support/Path.h"
@@ -47,7 +46,7 @@ template class llvm::SymbolTableListTraits<GlobalAlias, Module>;
 //
 
 Module::Module(StringRef MID, LLVMContext &C)
-    : Context(C), Materializer(), ModuleID(MID), RNG(nullptr), DL("") {
+    : Context(C), Materializer(), ModuleID(MID), DL("") {
   ValSymTab = new ValueSymbolTable();
   NamedMDSymTab = new StringMap<NamedMDNode *>();
   Context.addModule(this);
@@ -62,8 +61,26 @@ Module::~Module() {
   NamedMDList.clear();
   delete ValSymTab;
   delete static_cast<StringMap<NamedMDNode *> *>(NamedMDSymTab);
-  delete RNG;
 }
+
+RandomNumberGenerator *Module::createRNG(const Pass* P) const {
+  SmallString<32> Salt(P->getPassName());
+
+  // This RNG is guaranteed to produce the same random stream only
+  // when the Module ID and thus the input filename is the same. This
+  // might be problematic if the input filename extension changes
+  // (e.g. from .c to .bc or .ll).
+  //
+  // We could store this salt in NamedMetadata, but this would make
+  // the parameter non-const. This would unfortunately make this
+  // interface unusable by any Machine passes, since they only have a
+  // const reference to their IR Module. Alternatively we can always
+  // store salt metadata from the Module constructor.
+  Salt += sys::path::filename(getModuleIdentifier());
+
+  return new RandomNumberGenerator(Salt);
+}
+
 
 /// getNamedValue - Return the first global value in the module with
 /// the specified name, of arbitrary type.  This method returns null
@@ -261,7 +278,7 @@ void Module::eraseNamedMetadata(NamedMDNode *NMD) {
 }
 
 bool Module::isValidModFlagBehavior(Metadata *MD, ModFlagBehavior &MFB) {
-  if (ConstantInt *Behavior = mdconst::dyn_extract<ConstantInt>(MD)) {
+  if (ConstantInt *Behavior = mdconst::dyn_extract_or_null<ConstantInt>(MD)) {
     uint64_t Val = Behavior->getLimitedValue();
     if (Val >= ModFlagBehaviorFirstVal && Val <= ModFlagBehaviorLastVal) {
       MFB = static_cast<ModFlagBehavior>(Val);
@@ -281,7 +298,7 @@ getModuleFlagsMetadata(SmallVectorImpl<ModuleFlagEntry> &Flags) const {
     ModFlagBehavior MFB;
     if (Flag->getNumOperands() >= 3 &&
         isValidModFlagBehavior(Flag->getOperand(0), MFB) &&
-        isa<MDString>(Flag->getOperand(1))) {
+        dyn_cast_or_null<MDString>(Flag->getOperand(1))) {
       // Check the operands of the MDNode before accessing the operands.
       // The verifier will actually catch these failures.
       MDString *Key = cast<MDString>(Flag->getOperand(1));
@@ -348,41 +365,11 @@ void Module::addModuleFlag(MDNode *Node) {
 
 void Module::setDataLayout(StringRef Desc) {
   DL.reset(Desc);
-
-  if (Desc.empty()) {
-    DataLayoutStr = "";
-  } else {
-    DataLayoutStr = DL.getStringRepresentation();
-    // DataLayoutStr is now equivalent to Desc, but since the representation
-    // is not unique, they may not be identical.
-  }
 }
 
-void Module::setDataLayout(const DataLayout *Other) {
-  if (!Other) {
-    DataLayoutStr = "";
-    DL.reset("");
-  } else {
-    DL = *Other;
-    DataLayoutStr = DL.getStringRepresentation();
-  }
-}
+void Module::setDataLayout(const DataLayout &Other) { DL = Other; }
 
-const DataLayout *Module::getDataLayout() const {
-  if (DataLayoutStr.empty())
-    return nullptr;
-  return &DL;
-}
-
-// We want reproducible builds, but ModuleID may be a full path so we just use
-// the filename to salt the RNG (although it is not guaranteed to be unique).
-RandomNumberGenerator &Module::getRNG() const {
-  if (RNG == nullptr) {
-    StringRef Salt = sys::path::filename(ModuleID);
-    RNG = new RandomNumberGenerator(Salt);
-  }
-  return *RNG;
-}
+const DataLayout &Module::getDataLayout() const { return DL; }
 
 //===----------------------------------------------------------------------===//
 // Methods to control the materialization of GlobalValues in the Module.

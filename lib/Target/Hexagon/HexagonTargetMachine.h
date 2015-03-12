@@ -32,7 +32,6 @@ public:
                        Reloc::Model RM, CodeModel::Model CM,
                        CodeGenOpt::Level OL);
   ~HexagonTargetMachine() override;
-
   const HexagonSubtarget *getSubtargetImpl() const override {
     return &Subtarget;
   }

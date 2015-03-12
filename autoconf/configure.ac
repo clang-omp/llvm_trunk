@@ -32,10 +32,10 @@ dnl===-----------------------------------------------------------------------===
 dnl Initialize autoconf and define the package name, version number and
 dnl address for reporting bugs.
 
-AC_INIT([LLVM],[3.6.0svn],[http://llvm.org/bugs/])
+AC_INIT([LLVM],[3.7.0svn],[http://llvm.org/bugs/])
 
 LLVM_VERSION_MAJOR=3
-LLVM_VERSION_MINOR=6
+LLVM_VERSION_MINOR=7
 LLVM_VERSION_PATCH=0
 LLVM_VERSION_SUFFIX=svn
 
@@ -51,8 +51,8 @@ AC_SUBST([LLVM_VERSION_SUFFIX])
 
 dnl Provide a copyright substitution and ensure the copyright notice is included
 dnl in the output of --version option of the generated configure script.
-AC_SUBST(LLVM_COPYRIGHT,["Copyright (c) 2003-2014 University of Illinois at Urbana-Champaign."])
-AC_COPYRIGHT([Copyright (c) 2003-2014 University of Illinois at Urbana-Champaign.])
+AC_SUBST(LLVM_COPYRIGHT,["Copyright (c) 2003-2015 University of Illinois at Urbana-Champaign."])
+AC_COPYRIGHT([Copyright (c) 2003-2015 University of Illinois at Urbana-Champaign.])
 
 dnl Indicate that we require autoconf 2.60 or later.
 AC_PREREQ(2.60)
@@ -267,6 +267,11 @@ AC_CACHE_CHECK([type of operating system we're going to host on],
     llvm_cv_no_link_all_option="-Wl,--no-whole-archive"
     llvm_cv_os_type="DragonFly"
     llvm_cv_platform_type="Unix" ;;
+  *-*-bitrig*)
+    llvm_cv_link_all_option="-Wl,--whole-archive"
+    llvm_cv_no_link_all_option="-Wl,--no-whole-archive"
+    llvm_cv_os_type="Bitrig"
+    llvm_cv_platform_type="Unix" ;;
   *-*-hpux*)
     llvm_cv_link_all_option="-Wl,--whole-archive"
     llvm_cv_no_link_all_option="-Wl,--no-whole-archive"
@@ -347,6 +352,8 @@ AC_CACHE_CHECK([type of operating system we're going to target],
     llvm_cv_target_os_type="NetBSD" ;;
   *-*-dragonfly*)
     llvm_cv_target_os_type="DragonFly" ;;
+  *-*-bitrig*)
+    llvm_cv_target_os_type="Bitrig" ;;
   *-*-hpux*)
     llvm_cv_target_os_type="HP-UX" ;;
   *-*-interix*)
@@ -369,6 +376,8 @@ AC_CACHE_CHECK([type of operating system we're going to target],
     llvm_cv_target_os_type="NativeClient" ;;
   *-unknown-eabi*)
     llvm_cv_target_os_type="Freestanding" ;;
+  *-*-ps4)
+    llvm_cv_target_os_type="PS4" ;;
   *)
     llvm_cv_target_os_type="Unknown" ;;
 esac])
@@ -1533,11 +1542,11 @@ AC_ARG_WITH(oprofile,
             AC_SEARCH_LIBS(bfd_init, bfd, [], [])
             AC_SEARCH_LIBS(op_open_agent, opagent, [], [
               echo "Error! You need to have libopagent around."
-              exit -1
+              exit 1
             ])
             AC_CHECK_HEADER([opagent.h], [], [
               echo "Error! You need to have opagent.h around."
-              exit -1
+              exit 1
               ])
           fi ;;
         *)
@@ -1690,9 +1699,7 @@ dnl=== SECTION 8: Check for specific functions needed
 dnl===
 dnl===-----------------------------------------------------------------------===
 
-AC_CHECK_FUNCS([backtrace ceilf floorf roundf rintf nearbyintf getcwd ])
-AC_CHECK_FUNCS([powf fmodf strtof round ])
-AC_CHECK_FUNCS([log log2 log10 exp exp2])
+AC_CHECK_FUNCS([backtrace getcwd ])
 AC_CHECK_FUNCS([getpagesize getrusage getrlimit setrlimit gettimeofday ])
 AC_CHECK_FUNCS([isatty mkdtemp mkstemp ])
 AC_CHECK_FUNCS([mktemp posix_spawn pread realpath sbrk setrlimit ])
@@ -1714,7 +1721,9 @@ if test "$llvm_cv_os_type" = "MingW" ; then
   AC_CHECK_LIB(gcc,_alloca,AC_DEFINE([HAVE__ALLOCA],[1],[Have host's _alloca]))
   AC_CHECK_LIB(gcc,__alloca,AC_DEFINE([HAVE___ALLOCA],[1],[Have host's __alloca]))
   AC_CHECK_LIB(gcc,__chkstk,AC_DEFINE([HAVE___CHKSTK],[1],[Have host's __chkstk]))
+  AC_CHECK_LIB(gcc,__chkstk_ms,AC_DEFINE([HAVE___CHKSTK_MS],[1],[Have host's __chkstk_ms]))
   AC_CHECK_LIB(gcc,___chkstk,AC_DEFINE([HAVE____CHKSTK],[1],[Have host's ___chkstk]))
+  AC_CHECK_LIB(gcc,___chkstk_ms,AC_DEFINE([HAVE____CHKSTK_MS],[1],[Have host's ___chkstk_ms]))
 
   AC_CHECK_LIB(gcc,__ashldi3,AC_DEFINE([HAVE___ASHLDI3],[1],[Have host's __ashldi3]))
   AC_CHECK_LIB(gcc,__ashrdi3,AC_DEFINE([HAVE___ASHRDI3],[1],[Have host's __ashrdi3]))
@@ -1753,11 +1762,6 @@ if test "$llvm_cv_os_type" = "MingW" ; then
 ])
   AC_DEFINE_UNQUOTED([WIN32_ELMCB_PCSTR],$llvm_cv_win32_elmcb_pcstr,[Type of 1st arg on ELM Callback])
 fi
-
-dnl Check for variations in the Standard C++ library and STL. These macros are
-dnl provided by LLVM in the autoconf/m4 directory.
-AC_FUNC_ISNAN
-AC_FUNC_ISINF
 
 dnl Check for mmap support.We also need to know if /dev/zero is required to
 dnl be opened for allocating RWX memory.
@@ -2017,6 +2021,11 @@ if test "${clang_src_root}" = ""; then
   clang_src_root="$srcdir/tools/clang"
 fi
 if test -f ${clang_src_root}/README.txt; then
+  dnl Clang supports build systems which use the multilib libdir suffix.
+  dnl The autoconf system doesn't support this so stub out that variable.
+  AC_DEFINE_UNQUOTED(CLANG_LIBDIR_SUFFIX,"",
+                     [Multilib suffix for libdir.])
+
   dnl Use variables to stay under 80 columns.
   configh="include/clang/Config/config.h"
   doxy="docs/doxygen.cfg"

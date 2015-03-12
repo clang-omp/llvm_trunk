@@ -12,12 +12,14 @@
 //===----------------------------------------------------------------------===//
 
 #include "Mips16HardFloat.h"
+#include "MipsTargetMachine.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Value.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <string>
+using namespace llvm;
 
 #define DEBUG_TYPE "mips16-hard-float"
 
@@ -247,12 +249,12 @@ static void swapFPIntParams
 // Having called needsFPHelperFromSig
 //
 static void assureFPCallStub(Function &F, Module *M,
-                             const MipsSubtarget &Subtarget) {
+                             const MipsTargetMachine &TM) {
   // for now we only need them for static relocation
-  if (Subtarget.getRelocationModel() == Reloc::PIC_)
+  if (TM.getRelocationModel() == Reloc::PIC_)
     return;
   LLVMContext &Context = M->getContext();
-  bool LE = Subtarget.isLittle();
+  bool LE = TM.isLittleEndian();
   std::string Name = F.getName();
   std::string SectionName = ".mips16.call.fp." + Name;
   std::string StubName = "__call_stub_fp_" + Name;
@@ -362,8 +364,8 @@ static bool isIntrinsicInline(Function *F) {
 // Returns of float, double and complex need to be handled with a helper
 // function.
 //
-static bool fixupFPReturnAndCall
-  (Function &F, Module *M,  const MipsSubtarget &Subtarget) {
+static bool fixupFPReturnAndCall(Function &F, Module *M,
+                                 const MipsTargetMachine &TM) {
   bool Modified = false;
   LLVMContext &C = M->getContext();
   Type *MyVoid = Type::getVoidTy(C);
@@ -426,9 +428,9 @@ static bool fixupFPReturnAndCall
               Modified=true;
               F.addFnAttr("saveS2");
             }
-            if (Subtarget.getRelocationModel() != Reloc::PIC_ ) {
+            if (TM.getRelocationModel() != Reloc::PIC_ ) {
               if (needsFPHelperFromSig(*F_)) {
-                assureFPCallStub(*F_, M, Subtarget);
+                assureFPCallStub(*F_, M, TM);
                 Modified=true;
               }
             }
@@ -439,9 +441,9 @@ static bool fixupFPReturnAndCall
 }
 
 static void createFPFnStub(Function *F, Module *M, FPParamVariant PV,
-                  const MipsSubtarget &Subtarget ) {
-  bool PicMode = Subtarget.getRelocationModel() == Reloc::PIC_;
-  bool LE = Subtarget.isLittle();
+                           const MipsTargetMachine &TM) {
+  bool PicMode = TM.getRelocationModel() == Reloc::PIC_;
+  bool LE = TM.isLittleEndian();
   LLVMContext &Context = M->getContext();
   std::string Name = F->getName();
   std::string SectionName = ".mips16.fn." + Name;
@@ -458,7 +460,6 @@ static void createFPFnStub(Function *F, Module *M, FPParamVariant PV,
   FStub->setSection(SectionName);
   BasicBlock *BB = BasicBlock::Create(Context, "entry", FStub);
   InlineAsmHelper IAH(Context, BB);
-  IAH.Out(" .set  macro");
   if (PicMode) {
     IAH.Out(".set noreorder");
     IAH.Out(".cpload  $$25");
@@ -467,7 +468,6 @@ static void createFPFnStub(Function *F, Module *M, FPParamVariant PV,
     IAH.Out("la $$25," + LocalName);
   }
   else {
-    IAH.Out(".set reorder");
     IAH.Out("la $$25," + Name);
   }
   swapFPIntParams(PV, M, IAH, LE, false);
@@ -491,7 +491,20 @@ static void removeUseSoftFloat(Function &F) {
   F.addAttributes(AttributeSet::FunctionIndex, A);
 }
 
-namespace llvm {
+namespace {
+class Mips16HardFloat : public ModulePass {
+public:
+  static char ID;
+
+  Mips16HardFloat(MipsTargetMachine &TM_) : ModulePass(ID), TM(TM_) {}
+
+  const char *getPassName() const override { return "MIPS16 Hard Float Pass"; }
+  bool runOnModule(Module &M) override;
+
+protected:
+  const MipsTargetMachine &TM;
+};
+} // namespace
 
 //
 // This pass only makes sense when the underlying chip has floating point but
@@ -522,19 +535,17 @@ bool Mips16HardFloat::runOnModule(Module &M) {
     }
     if (F->isDeclaration() || F->hasFnAttribute("mips16_fp_stub") ||
         F->hasFnAttribute("nomips16")) continue;
-    Modified |= fixupFPReturnAndCall(*F, &M, Subtarget);
+    Modified |= fixupFPReturnAndCall(*F, &M, TM);
     FPParamVariant V = whichFPParamVariantNeeded(*F);
     if (V != NoSig) {
       Modified = true;
-      createFPFnStub(F, &M, V, Subtarget);
+      createFPFnStub(F, &M, V, TM);
     }
   }
   return Modified;
 }
 
 char Mips16HardFloat::ID = 0;
-
-}
 
 ModulePass *llvm::createMips16HardFloat(MipsTargetMachine &TM) {
   return new Mips16HardFloat(TM);

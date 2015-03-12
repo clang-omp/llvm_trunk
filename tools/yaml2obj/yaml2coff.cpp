@@ -13,13 +13,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "yaml2obj.h"
-#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSwitch.h"
-#include "llvm/Object/COFFYAML.h"
 #include "llvm/Object/COFF.h"
+#include "llvm/Object/COFFYAML.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SourceMgr.h"
@@ -282,7 +282,7 @@ raw_ostream &operator<<(raw_ostream &OS, const num_zeros_impl &NZI) {
   return OS;
 }
 
-num_zeros_impl num_zeros(size_t N) {
+static num_zeros_impl num_zeros(size_t N) {
   num_zeros_impl NZI(N);
   return NZI;
 }

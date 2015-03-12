@@ -27,6 +27,7 @@
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/CFG.h"
 #include "llvm/Analysis/CaptureTracking.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/DataLayout.h"
@@ -37,7 +38,6 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Type.h"
 #include "llvm/Pass.h"
-#include "llvm/Target/TargetLibraryInfo.h"
 using namespace llvm;
 
 // Register the AliasAnalysis interface, providing a nice name to refer to.
@@ -407,9 +407,10 @@ AliasAnalysis::ModRefResult
 AliasAnalysis::callCapturesBefore(const Instruction *I,
                                   const AliasAnalysis::Location &MemLoc,
                                   DominatorTree *DT) {
-  if (!DT || !DL) return AliasAnalysis::ModRef;
+  if (!DT)
+    return AliasAnalysis::ModRef;
 
-  const Value *Object = GetUnderlyingObject(MemLoc.Ptr, DL);
+  const Value *Object = GetUnderlyingObject(MemLoc.Ptr, *DL);
   if (!isIdentifiedObject(Object) || isa<GlobalValue>(Object) ||
       isa<Constant>(Object))
     return AliasAnalysis::ModRef;
@@ -462,10 +463,10 @@ AliasAnalysis::~AliasAnalysis() {}
 /// InitializeAliasAnalysis - Subclasses must call this method to initialize the
 /// AliasAnalysis interface before any other methods are called.
 ///
-void AliasAnalysis::InitializeAliasAnalysis(Pass *P) {
-  DataLayoutPass *DLP = P->getAnalysisIfAvailable<DataLayoutPass>();
-  DL = DLP ? &DLP->getDataLayout() : nullptr;
-  TLI = P->getAnalysisIfAvailable<TargetLibraryInfo>();
+void AliasAnalysis::InitializeAliasAnalysis(Pass *P, const DataLayout *NewDL) {
+  DL = NewDL;
+  auto *TLIP = P->getAnalysisIfAvailable<TargetLibraryInfoWrapperPass>();
+  TLI = TLIP ? &TLIP->getTLI() : nullptr;
   AA = &P->getAnalysis<AliasAnalysis>();
 }
 

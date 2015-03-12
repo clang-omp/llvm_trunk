@@ -13,11 +13,9 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
-
-#include <functional>
+#include "llvm/IR/DiagnosticInfo.h"
 
 namespace llvm {
-class DiagnosticInfo;
 class Module;
 class StructType;
 class Type;
@@ -28,8 +26,6 @@ class Type;
 /// something with it after the linking.
 class Linker {
 public:
-  typedef std::function<void(const DiagnosticInfo &)> DiagnosticHandlerFunction;
-
   struct StructTypeKeyInfo {
     struct KeyTy {
       ArrayRef<Type *> ETypes;
@@ -58,6 +54,7 @@ public:
     NonOpaqueStructTypeSet NonOpaqueStructTypes;
 
     void addNonOpaque(StructType *Ty);
+    void switchToNonOpaque(StructType *Ty);
     void addOpaque(StructType *Ty);
     StructType *findNonOpaque(ArrayRef<Type *> ETypes, bool IsPacked);
     bool hasType(StructType *Ty);
@@ -73,6 +70,9 @@ public:
   /// \brief Link \p Src into the composite. The source is destroyed.
   /// Returns true on error.
   bool linkInModule(Module *Src);
+
+  /// \brief Set the composite to the passed-in module.
+  void setModule(Module *Dst);
 
   static bool LinkModules(Module *Dest, Module *Src,
                           DiagnosticHandlerFunction DiagnosticHandler);

@@ -123,8 +123,8 @@ private:
   /// second element.
   std::vector<std::pair<unsigned, unsigned> > LiveIns;
 
-  MachineRegisterInfo(const MachineRegisterInfo&) LLVM_DELETED_FUNCTION;
-  void operator=(const MachineRegisterInfo&) LLVM_DELETED_FUNCTION;
+  MachineRegisterInfo(const MachineRegisterInfo&) = delete;
+  void operator=(const MachineRegisterInfo&) = delete;
 public:
   explicit MachineRegisterInfo(const MachineFunction *MF);
 
@@ -593,7 +593,7 @@ public:
   /// virtual register, for example after removing instructions or splitting
   /// the live range.
   ///
-  bool recomputeRegClass(unsigned Reg, const TargetMachine&);
+  bool recomputeRegClass(unsigned Reg);
 
   /// createVirtualRegister - Create and return a new virtual register in the
   /// function with the specified register class.
@@ -829,7 +829,6 @@ public:
     typedef std::iterator<std::forward_iterator_tag,
                           MachineInstr, ptrdiff_t>::pointer pointer;
 
-    defusechain_iterator(const defusechain_iterator &I) : Op(I.Op) {}
     defusechain_iterator() : Op(nullptr) {}
 
     bool operator==(const defusechain_iterator &x) const {
@@ -932,7 +931,6 @@ public:
     typedef std::iterator<std::forward_iterator_tag,
                           MachineInstr, ptrdiff_t>::pointer pointer;
 
-    defusechain_instr_iterator(const defusechain_instr_iterator &I) : Op(I.Op){}
     defusechain_instr_iterator() : Op(nullptr) {}
 
     bool operator==(const defusechain_instr_iterator &x) const {

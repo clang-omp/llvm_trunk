@@ -727,7 +727,7 @@ public:
     OS.flush();
 
     // Emit the string.
-    O.indent(6) << "AsmString = \"" << OutString.str() << "\";\n";
+    O.indent(6) << "AsmString = \"" << OutString << "\";\n";
 
     O.indent(6) << "break;\n";
     O.indent(4) << '}';
@@ -998,7 +998,7 @@ void AsmWriterEmitter::EmitPrintAliasInstruction(raw_ostream &O) {
     return;
   }
 
-  if (MCOpPredicates.size())
+  if (!MCOpPredicates.empty())
     O << "static bool " << Target.getName() << ClassName
       << "ValidateMCOperand(\n"
       << "       const MCOperand &MCOp, unsigned PredicateIndex);\n";
@@ -1064,7 +1064,7 @@ void AsmWriterEmitter::EmitPrintAliasInstruction(raw_ostream &O) {
   }    
   O << "}\n\n";
 
-  if (MCOpPredicates.size()) {
+  if (!MCOpPredicates.empty()) {
     O << "static bool " << Target.getName() << ClassName
       << "ValidateMCOperand(\n"
       << "       const MCOperand &MCOp, unsigned PredicateIndex) {\n"

@@ -15,8 +15,8 @@
 #ifndef LLVM_IR_DEBUGLOC_H
 #define LLVM_IR_DEBUGLOC_H
 
-#include "llvm/Support/DataTypes.h"
 #include "llvm/IR/TrackingMDRef.h"
+#include "llvm/Support/DataTypes.h"
 
 namespace llvm {
 
@@ -103,7 +103,6 @@ namespace llvm {
     void dump(const LLVMContext &) const { dump(); }
     /// \brief prints source location /path/to/file.exe:line:col @[inlined at]
     void print(raw_ostream &OS) const;
-    void print(const LLVMContext &, raw_ostream &OS) const { print(OS); }
   };
 
 } // end namespace llvm

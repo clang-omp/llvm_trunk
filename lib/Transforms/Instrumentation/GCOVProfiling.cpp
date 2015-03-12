@@ -70,20 +70,10 @@ namespace {
   class GCOVProfiler : public ModulePass {
   public:
     static char ID;
-    GCOVProfiler() : ModulePass(ID), Options(GCOVOptions::getDefault()) {
-      init();
-    }
-    GCOVProfiler(const GCOVOptions &Options) : ModulePass(ID), Options(Options){
+    GCOVProfiler() : GCOVProfiler(GCOVOptions::getDefault()) {}
+    GCOVProfiler(const GCOVOptions &Opts) : ModulePass(ID), Options(Opts) {
       assert((Options.EmitNotes || Options.EmitData) &&
              "GCOVProfiler asked to do nothing?");
-      init();
-    }
-    const char *getPassName() const override {
-      return "GCOV Profiler";
-    }
-
-  private:
-    void init() {
       ReversedVersion[0] = Options.Version[3];
       ReversedVersion[1] = Options.Version[2];
       ReversedVersion[2] = Options.Version[1];
@@ -91,6 +81,11 @@ namespace {
       ReversedVersion[4] = '\0';
       initializeGCOVProfilerPass(*PassRegistry::getPassRegistry());
     }
+    const char *getPassName() const override {
+      return "GCOV Profiler";
+    }
+
+  private:
     bool runOnModule(Module &M) override;
 
     // Create the .gcno files for the Module based on DebugInfo.
@@ -285,6 +280,14 @@ namespace {
       DeleteContainerSeconds(LinesByFile);
     }
 
+    GCOVBlock(const GCOVBlock &RHS) : GCOVRecord(RHS), Number(RHS.Number) {
+      // Only allow copy before edges and lines have been added. After that,
+      // there are inter-block pointers (eg: edges) that won't take kindly to
+      // blocks being copied or moved around.
+      assert(LinesByFile.empty());
+      assert(OutEdges.empty());
+    }
+
    private:
     friend class GCOVFunction;
 
@@ -303,21 +306,21 @@ namespace {
   // object users can construct, the blocks and lines will be rooted here.
   class GCOVFunction : public GCOVRecord {
    public:
-    GCOVFunction(DISubprogram SP, raw_ostream *os, uint32_t Ident,
-                 bool UseCfgChecksum) :
-        SP(SP), Ident(Ident), UseCfgChecksum(UseCfgChecksum), CfgChecksum(0) {
+     GCOVFunction(DISubprogram SP, raw_ostream *os, uint32_t Ident,
+                  bool UseCfgChecksum)
+         : SP(SP), Ident(Ident), UseCfgChecksum(UseCfgChecksum), CfgChecksum(0),
+           ReturnBlock(1, os) {
       this->os = os;
 
       Function *F = SP.getFunction();
       DEBUG(dbgs() << "Function: " << getFunctionName(SP) << "\n");
 
-      Function::iterator BB = F->begin(), E = F->end();
-      Blocks[BB++] = new GCOVBlock(0, os);
-      ReturnBlock = new GCOVBlock(1, os);
-
-      uint32_t i = 2;
-      for (; BB != E; ++BB) {
-        Blocks[BB] = new GCOVBlock(i++, os);
+      uint32_t i = 0;
+      for (auto &BB : *F) {
+        // Skip index 1 (0, 2, 3, 4, ...) because that's assigned to the
+        // ReturnBlock.
+        bool first = i == 0;
+        Blocks.insert(std::make_pair(&BB, GCOVBlock(i++ + !first, os)));
       }
 
       std::string FunctionNameAndLine;
@@ -327,17 +330,12 @@ namespace {
       FuncChecksum = hash_value(FunctionNameAndLine);
     }
 
-    ~GCOVFunction() {
-      DeleteContainerSeconds(Blocks);
-      delete ReturnBlock;
-    }
-
     GCOVBlock &getBlock(BasicBlock *BB) {
-      return *Blocks[BB];
+      return Blocks.find(BB)->second;
     }
 
     GCOVBlock &getReturnBlock() {
-      return *ReturnBlock;
+      return ReturnBlock;
     }
 
     std::string getEdgeDestinations() {
@@ -345,7 +343,7 @@ namespace {
       raw_string_ostream EDOS(EdgeDestinations);
       Function *F = Blocks.begin()->first->getParent();
       for (Function::iterator I = F->begin(), E = F->end(); I != E; ++I) {
-        GCOVBlock &Block = *Blocks[I];
+        GCOVBlock &Block = getBlock(I);
         for (int i = 0, e = Block.OutEdges.size(); i != e; ++i)
           EDOS << Block.OutEdges[i]->Number;
       }
@@ -387,7 +385,7 @@ namespace {
       if (Blocks.empty()) return;
       Function *F = Blocks.begin()->first->getParent();
       for (Function::iterator I = F->begin(), E = F->end(); I != E; ++I) {
-        GCOVBlock &Block = *Blocks[I];
+        GCOVBlock &Block = getBlock(I);
         if (Block.OutEdges.empty()) continue;
 
         writeBytes(EdgeTag, 4);
@@ -403,7 +401,7 @@ namespace {
 
       // Emit lines for each block.
       for (Function::iterator I = F->begin(), E = F->end(); I != E; ++I) {
-        Blocks[I]->writeOut();
+        getBlock(I).writeOut();
       }
     }
 
@@ -413,8 +411,8 @@ namespace {
     uint32_t FuncChecksum;
     bool UseCfgChecksum;
     uint32_t CfgChecksum;
-    DenseMap<BasicBlock *, GCOVBlock *> Blocks;
-    GCOVBlock *ReturnBlock;
+    DenseMap<BasicBlock *, GCOVBlock> Blocks;
+    GCOVBlock ReturnBlock;
   };
 }
 

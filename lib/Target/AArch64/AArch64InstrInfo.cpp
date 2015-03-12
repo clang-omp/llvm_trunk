@@ -12,9 +12,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "AArch64InstrInfo.h"
+#include "AArch64MachineCombinerPattern.h"
 #include "AArch64Subtarget.h"
 #include "MCTargetDesc/AArch64AddressingModes.h"
-#include "AArch64MachineCombinerPattern.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineMemOperand.h"
@@ -31,7 +31,7 @@ using namespace llvm;
 
 AArch64InstrInfo::AArch64InstrInfo(const AArch64Subtarget &STI)
     : AArch64GenInstrInfo(AArch64::ADJCALLSTACKDOWN, AArch64::ADJCALLSTACKUP),
-      RI(this, &STI), Subtarget(STI) {}
+      RI(STI.getTargetTriple()), Subtarget(STI) {}
 
 /// GetInstSize - Return the number of bytes of code the specified
 /// instruction may be.  This returns the maximum number of bytes.
@@ -707,9 +707,8 @@ static bool UpdateOperandRegClass(MachineInstr *Instr) {
   assert(MBB && "Can't get MachineBasicBlock here");
   MachineFunction *MF = MBB->getParent();
   assert(MF && "Can't get MachineFunction here");
-  const TargetMachine *TM = &MF->getTarget();
-  const TargetInstrInfo *TII = TM->getSubtargetImpl()->getInstrInfo();
-  const TargetRegisterInfo *TRI = TM->getSubtargetImpl()->getRegisterInfo();
+  const TargetInstrInfo *TII = MF->getSubtarget().getInstrInfo();
+  const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
   MachineRegisterInfo *MRI = &MF->getRegInfo();
 
   for (unsigned OpIdx = 0, EndIdx = Instr->getNumOperands(); OpIdx < EndIdx;
@@ -2069,10 +2068,10 @@ void llvm::emitFrameOffset(MachineBasicBlock &MBB,
       .setMIFlag(Flag);
 }
 
-MachineInstr *
-AArch64InstrInfo::foldMemoryOperandImpl(MachineFunction &MF, MachineInstr *MI,
-                                        const SmallVectorImpl<unsigned> &Ops,
-                                        int FrameIndex) const {
+MachineInstr *AArch64InstrInfo::foldMemoryOperandImpl(MachineFunction &MF,
+                                                      MachineInstr *MI,
+                                                      ArrayRef<unsigned> Ops,
+                                                      int FrameIndex) const {
   // This is a bit of a hack. Consider this instruction:
   //
   //   %vreg0<def> = COPY %SP; GPR64all:%vreg0

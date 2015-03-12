@@ -15,18 +15,16 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Mangler.h"
 #include "llvm/IR/Module.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/Object/Archive.h"
 #include "llvm/Object/ObjectFile.h"
-#include "llvm/PassManager.h"
 #include "llvm/Support/DynamicLibrary.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/MutexGuard.h"
-#include "llvm/Target/TargetLowering.h"
-#include "llvm/Target/TargetSubtargetInfo.h"
 
 using namespace llvm;
 
@@ -77,7 +75,7 @@ MCJIT::MCJIT(std::unique_ptr<Module> M, std::unique_ptr<TargetMachine> tm,
   Modules.clear();
 
   OwnedModules.addModule(std::move(First));
-  setDataLayout(TM->getSubtargetImpl()->getDataLayout());
+  setDataLayout(TM->getDataLayout());
   RegisterJITEventListener(JITEventListener::createGDBRegistrationListener());
 }
 
@@ -137,10 +135,9 @@ std::unique_ptr<MemoryBuffer> MCJIT::emitObject(Module *M) {
   // MCJIT instance, since these conditions are tested by our caller,
   // generateCodeForModule.
 
-  PassManager PM;
+  legacy::PassManager PM;
 
-  M->setDataLayout(TM->getSubtargetImpl()->getDataLayout());
-  PM.add(new DataLayoutPass());
+  M->setDataLayout(*TM->getDataLayout());
 
   // The RuntimeDyld will take ownership of this shortly
   SmallVector<char, 4096> ObjBufferSV;
@@ -257,10 +254,10 @@ void MCJIT::finalizeModule(Module *M) {
 }
 
 uint64_t MCJIT::getExistingSymbolAddress(const std::string &Name) {
-  Mangler Mang(TM->getSubtargetImpl()->getDataLayout());
+  Mangler Mang(TM->getDataLayout());
   SmallString<128> FullName;
   Mang.getNameWithPrefix(FullName, Name);
-  return Dyld.getSymbolLoadAddress(FullName);
+  return Dyld.getSymbol(FullName).getAddress();
 }
 
 Module *MCJIT::findModuleForSymbol(const std::string &Name,
@@ -357,7 +354,7 @@ uint64_t MCJIT::getFunctionAddress(const std::string &Name) {
 void *MCJIT::getPointerToFunction(Function *F) {
   MutexGuard locked(lock);
 
-  Mangler Mang(TM->getSubtargetImpl()->getDataLayout());
+  Mangler Mang(TM->getDataLayout());
   SmallString<128> Name;
   TM->getNameWithPrefix(Name, F, Mang);
 
@@ -386,7 +383,7 @@ void *MCJIT::getPointerToFunction(Function *F) {
   //
   // This is the accessor for the target address, so make sure to check the
   // load address of the symbol, not the local address.
-  return (void*)Dyld.getSymbolLoadAddress(Name);
+  return (void*)Dyld.getSymbol(Name).getAddress();
 }
 
 void MCJIT::runStaticConstructorsDestructorsInModulePtrSet(
@@ -410,7 +407,8 @@ Function *MCJIT::FindFunctionNamedInModulePtrSet(const char *FnName,
                                                  ModulePtrSet::iterator I,
                                                  ModulePtrSet::iterator E) {
   for (; I != E; ++I) {
-    if (Function *F = (*I)->getFunction(FnName))
+    Function *F = (*I)->getFunction(FnName);
+    if (F && !F->isDeclaration())
       return F;
   }
   return nullptr;

@@ -83,6 +83,7 @@ representation.
    Passes
    YamlIO
    GetElementPtr
+   Frontend/PerformanceTips
    MCJITDesignAndImplementation
 
 :doc:`GettingStarted`
@@ -150,6 +151,11 @@ representation.
   Answers to some very frequent questions about LLVM's most frequently
   misunderstood instruction.
 
+:doc:`Frontend/PerformanceTips`
+   A collection of tips for frontend authors on how to generate IR 
+   which LLVM is able to effectively optimize.
+
+
 Programming Documentation
 =========================
 
@@ -199,6 +205,8 @@ For developers of applications which use LLVM as a library.
   (`classes <http://llvm.org/doxygen/inherits.html>`_)
   (`tarball <http://llvm.org/doxygen/doxygen.tar.gz>`_)
 
+`Documentation for Go bindings <http://godoc.org/llvm.org/llvm/bindings/go/llvm>`_
+
 `ViewVC Repository Browser <http://llvm.org/viewvc/>`_
    ..
 
@@ -242,6 +250,7 @@ For API clients and LLVM developers.
    CoverageMappingFormat
    Statepoints
    MergeFunctions
+   BitSets
 
 :doc:`WritingAnLLVMPass`
    Information on how to write LLVM transformations and analyses.
@@ -340,6 +349,9 @@ For API clients and LLVM developers.
 
 :doc:`MergeFunctions`
   Describes functions merging optimization.
+
+:doc:`InAlloca`
+  Description of the ``inalloca`` argument attribute.
 
 Development Process Documentation
 =================================

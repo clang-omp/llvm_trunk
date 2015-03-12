@@ -31,8 +31,8 @@ template<typename ValueSubClass, typename ItemParentClass>
   class SymbolTableListTraits;
 
 class Instruction : public User, public ilist_node<Instruction> {
-  void operator=(const Instruction &) LLVM_DELETED_FUNCTION;
-  Instruction(const Instruction &) LLVM_DELETED_FUNCTION;
+  void operator=(const Instruction &) = delete;
+  Instruction(const Instruction &) = delete;
 
   BasicBlock *Parent;
   DebugLoc DbgLoc;                         // 'dbg' Metadata cache.
@@ -54,7 +54,12 @@ public:
   inline const BasicBlock *getParent() const { return Parent; }
   inline       BasicBlock *getParent()       { return Parent; }
 
-  const DataLayout *getDataLayout() const;
+  /// \brief Return the module owning the function this instruction belongs to
+  /// or nullptr it the function does not have a module.
+  ///
+  /// Note: this is undefined behavior if the instruction does not have a
+  /// parent, or the parent basic block does not have a parent function.
+  const Module *getModule() const;
 
   /// removeFromParent - This method unlinks 'this' from the containing basic
   /// block, but does not delete it.
@@ -201,7 +206,7 @@ public:
   void setAAMetadata(const AAMDNodes &N);
 
   /// setDebugLoc - Set the debug location information for this instruction.
-  void setDebugLoc(const DebugLoc &Loc) { DbgLoc = Loc; }
+  void setDebugLoc(DebugLoc Loc) { DbgLoc = std::move(Loc); }
 
   /// getDebugLoc - Return the debug location for this node as a DebugLoc.
   const DebugLoc &getDebugLoc() const { return DbgLoc; }

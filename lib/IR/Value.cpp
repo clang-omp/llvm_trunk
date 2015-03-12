@@ -23,9 +23,10 @@
 #include "llvm/IR/GetElementPtrTypeIterator.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instructions.h"
-#include "llvm/IR/LeakDetector.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Operator.h"
+#include "llvm/IR/Statepoint.h"
 #include "llvm/IR/ValueHandle.h"
 #include "llvm/IR/ValueSymbolTable.h"
 #include "llvm/Support/Debug.h"
@@ -68,15 +69,13 @@ Value::~Value() {
 #ifndef NDEBUG      // Only in -g mode...
   // Check to make sure that there are no uses of this value that are still
   // around when the value is destroyed.  If there are, then we have a dangling
-  // reference and something is wrong.  This code is here to print out what is
-  // still being referenced.  The value in question should be printed as
-  // a <badref>
+  // reference and something is wrong.  This code is here to print out where
+  // the value is still being referenced.
   //
   if (!use_empty()) {
     dbgs() << "While deleting: " << *VTy << " %" << getName() << "\n";
-    for (use_iterator I = use_begin(), E = use_end(); I != E; ++I)
-      dbgs() << "Use still stuck around after Def is destroyed:"
-           << **I << "\n";
+    for (auto *U : users())
+      dbgs() << "Use still stuck around after Def is destroyed:" << *U << "\n";
   }
 #endif
   assert(use_empty() && "Uses remain when a value is destroyed!");
@@ -84,9 +83,6 @@ Value::~Value() {
   // If this value is named, destroy the name.  This should not be in a symtab
   // at this point.
   destroyValueName();
-
-  // There should be no uses of this object anymore, remove it.
-  LeakDetector::removeGarbageObject(this);
 }
 
 void Value::destroyValueName() {
@@ -484,7 +480,7 @@ Value *Value::stripInBoundsOffsets() {
 ///
 /// Test if V is always a pointer to allocated and suitably aligned memory for
 /// a simple load or store.
-static bool isDereferenceablePointer(const Value *V, const DataLayout *DL,
+static bool isDereferenceablePointer(const Value *V, const DataLayout &DL,
                                      SmallPtrSetImpl<const Value *> &Visited) {
   // Note that it is not safe to speculate into a malloc'd region because
   // malloc may return null.
@@ -499,17 +495,14 @@ static bool isDereferenceablePointer(const Value *V, const DataLayout *DL,
   // to a type of smaller size (or the same size), and the alignment
   // is at least as large as for the resulting pointer type, then
   // we can look through the bitcast.
-  if (DL)
-    if (const BitCastInst* BC = dyn_cast<BitCastInst>(V)) {
-      Type *STy = BC->getSrcTy()->getPointerElementType(),
-           *DTy = BC->getDestTy()->getPointerElementType();
-      if (STy->isSized() && DTy->isSized() &&
-          (DL->getTypeStoreSize(STy) >=
-           DL->getTypeStoreSize(DTy)) &&
-          (DL->getABITypeAlignment(STy) >=
-           DL->getABITypeAlignment(DTy)))
-        return isDereferenceablePointer(BC->getOperand(0), DL, Visited);
-    }
+  if (const BitCastOperator *BC = dyn_cast<BitCastOperator>(V)) {
+    Type *STy = BC->getSrcTy()->getPointerElementType(),
+         *DTy = BC->getDestTy()->getPointerElementType();
+    if (STy->isSized() && DTy->isSized() &&
+        (DL.getTypeStoreSize(STy) >= DL.getTypeStoreSize(DTy)) &&
+        (DL.getABITypeAlignment(STy) >= DL.getABITypeAlignment(DTy)))
+      return isDereferenceablePointer(BC->getOperand(0), DL, Visited);
+  }
 
   // Global variables which can't collapse to null are ok.
   if (const GlobalVariable *GV = dyn_cast<GlobalVariable>(V))
@@ -522,7 +515,7 @@ static bool isDereferenceablePointer(const Value *V, const DataLayout *DL,
       return true;
     else if (uint64_t Bytes = A->getDereferenceableBytes()) {
       Type *Ty = V->getType()->getPointerElementType();
-      if (Ty->isSized() && DL && DL->getTypeStoreSize(Ty) <= Bytes)
+      if (Ty->isSized() && DL.getTypeStoreSize(Ty) <= Bytes)
         return true;
     }
 
@@ -534,7 +527,7 @@ static bool isDereferenceablePointer(const Value *V, const DataLayout *DL,
   if (ImmutableCallSite CS = V) {
     if (uint64_t Bytes = CS.getDereferenceableBytes(0)) {
       Type *Ty = V->getType()->getPointerElementType();
-      if (Ty->isSized() && DL && DL->getTypeStoreSize(Ty) <= Bytes)
+      if (Ty->isSized() && DL.getTypeStoreSize(Ty) <= Bytes)
         return true;
     }
   }
@@ -574,6 +567,13 @@ static bool isDereferenceablePointer(const Value *V, const DataLayout *DL,
     return true;
   }
 
+  // For gc.relocate, look through relocations
+  if (const IntrinsicInst *I = dyn_cast<IntrinsicInst>(V))
+    if (I->getIntrinsicID() == Intrinsic::experimental_gc_relocate) {
+      GCRelocateOperands RelocateInst(I);
+      return isDereferenceablePointer(RelocateInst.derivedPtr(), DL, Visited);
+    }
+
   if (const AddrSpaceCastInst *ASC = dyn_cast<AddrSpaceCastInst>(V))
     return isDereferenceablePointer(ASC->getOperand(0), DL, Visited);
 
@@ -581,15 +581,15 @@ static bool isDereferenceablePointer(const Value *V, const DataLayout *DL,
   return false;
 }
 
-bool Value::isDereferenceablePointer(const DataLayout *DL) const {
+bool Value::isDereferenceablePointer(const DataLayout &DL) const {
   // When dereferenceability information is provided by a dereferenceable
   // attribute, we know exactly how many bytes are dereferenceable. If we can
   // determine the exact offset to the attributed variable, we can use that
   // information here.
   Type *Ty = getType()->getPointerElementType();
-  if (Ty->isSized() && DL) {
-    APInt Offset(DL->getTypeStoreSizeInBits(getType()), 0);
-    const Value *BV = stripAndAccumulateInBoundsConstantOffsets(*DL, Offset);
+  if (Ty->isSized()) {
+    APInt Offset(DL.getTypeStoreSizeInBits(getType()), 0);
+    const Value *BV = stripAndAccumulateInBoundsConstantOffsets(DL, Offset);
 
     APInt DerefBytes(Offset.getBitWidth(), 0);
     if (const Argument *A = dyn_cast<Argument>(BV))
@@ -598,7 +598,7 @@ bool Value::isDereferenceablePointer(const DataLayout *DL) const {
       DerefBytes = CS.getDereferenceableBytes(0);
 
     if (DerefBytes.getBoolValue() && Offset.isNonNegative()) {
-      if (DerefBytes.uge(Offset + DL->getTypeStoreSize(Ty)))
+      if (DerefBytes.uge(Offset + DL.getTypeStoreSize(Ty)))
         return true;
     }
   }
@@ -649,7 +649,7 @@ void ValueHandleBase::AddToExistingUseList(ValueHandleBase **List) {
   setPrevPtr(List);
   if (Next) {
     Next->setPrevPtr(&Next);
-    assert(VP.getPointer() == Next->VP.getPointer() && "Added to wrong list?");
+    assert(V == Next->V && "Added to wrong list?");
   }
 }
 
@@ -664,14 +664,14 @@ void ValueHandleBase::AddToExistingUseListAfter(ValueHandleBase *List) {
 }
 
 void ValueHandleBase::AddToUseList() {
-  assert(VP.getPointer() && "Null pointer doesn't have a use list!");
+  assert(V && "Null pointer doesn't have a use list!");
 
-  LLVMContextImpl *pImpl = VP.getPointer()->getContext().pImpl;
+  LLVMContextImpl *pImpl = V->getContext().pImpl;
 
-  if (VP.getPointer()->HasValueHandle) {
+  if (V->HasValueHandle) {
     // If this value already has a ValueHandle, then it must be in the
     // ValueHandles map already.
-    ValueHandleBase *&Entry = pImpl->ValueHandles[VP.getPointer()];
+    ValueHandleBase *&Entry = pImpl->ValueHandles[V];
     assert(Entry && "Value doesn't have any handles?");
     AddToExistingUseList(&Entry);
     return;
@@ -685,10 +685,10 @@ void ValueHandleBase::AddToUseList() {
   DenseMap<Value*, ValueHandleBase*> &Handles = pImpl->ValueHandles;
   const void *OldBucketPtr = Handles.getPointerIntoBucketsArray();
 
-  ValueHandleBase *&Entry = Handles[VP.getPointer()];
+  ValueHandleBase *&Entry = Handles[V];
   assert(!Entry && "Value really did already have handles?");
   AddToExistingUseList(&Entry);
-  VP.getPointer()->HasValueHandle = true;
+  V->HasValueHandle = true;
 
   // If reallocation didn't happen or if this was the first insertion, don't
   // walk the table.
@@ -700,14 +700,14 @@ void ValueHandleBase::AddToUseList() {
   // Okay, reallocation did happen.  Fix the Prev Pointers.
   for (DenseMap<Value*, ValueHandleBase*>::iterator I = Handles.begin(),
        E = Handles.end(); I != E; ++I) {
-    assert(I->second && I->first == I->second->VP.getPointer() &&
+    assert(I->second && I->first == I->second->V &&
            "List invariant broken!");
     I->second->setPrevPtr(&I->second);
   }
 }
 
 void ValueHandleBase::RemoveFromUseList() {
-  assert(VP.getPointer() && VP.getPointer()->HasValueHandle &&
+  assert(V && V->HasValueHandle &&
          "Pointer doesn't have a use list!");
 
   // Unlink this from its use list.
@@ -724,11 +724,11 @@ void ValueHandleBase::RemoveFromUseList() {
   // If the Next pointer was null, then it is possible that this was the last
   // ValueHandle watching VP.  If so, delete its entry from the ValueHandles
   // map.
-  LLVMContextImpl *pImpl = VP.getPointer()->getContext().pImpl;
+  LLVMContextImpl *pImpl = V->getContext().pImpl;
   DenseMap<Value*, ValueHandleBase*> &Handles = pImpl->ValueHandles;
   if (Handles.isPointerIntoBucketsArray(PrevPtr)) {
-    Handles.erase(VP.getPointer());
-    VP.getPointer()->HasValueHandle = false;
+    Handles.erase(V);
+    V->HasValueHandle = false;
   }
 }
 

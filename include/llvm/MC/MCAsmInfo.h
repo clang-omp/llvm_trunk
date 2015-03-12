@@ -42,11 +42,11 @@ enum class EncodingType {
 }
 
 enum class ExceptionHandling {
-  None,         /// No exception support
-  DwarfCFI,     /// DWARF-like instruction based exceptions
-  SjLj,         /// setjmp/longjmp based exceptions
-  ARM,          /// ARM EHABI
-  ItaniumWinEH, /// Itanium EH built on Windows unwind info (.pdata and .xdata)
+  None,     /// No exception support
+  DwarfCFI, /// DWARF-like instruction based exceptions
+  SjLj,     /// setjmp/longjmp based exceptions
+  ARM,      /// ARM EHABI
+  WinEH,    /// Windows Exception Handling
 };
 
 namespace LCOMM {
@@ -117,6 +117,9 @@ protected:
 
   // Print the EH begin symbol with an assignment. Defaults to false.
   bool UseAssignmentForEHBegin;
+
+  // Do we need to create a local symbol for .size?
+  bool NeedsLocalForSize;
 
   /// This prefix is used for globals like constant pool entries that are
   /// completely private to the .s file and should not have names in the .o
@@ -253,6 +256,10 @@ protected:
   /// argument and how it is interpreted.  Defaults to NoAlignment.
   LCOMM::LCOMMType LCOMMDirectiveAlignmentType;
 
+  // True if the target allows .align directives on funtions. This is true for
+  // most targets, so defaults to true.
+  bool HasFunctionAlignment;
+
   /// True if the target has .type and .size directives, this is true for most
   /// ELF targets.  Defaults to true.
   bool HasDotTypeDotSizeDirective;
@@ -381,6 +388,12 @@ public:
     return nullptr;
   }
 
+  /// \brief True if the section is atomized using the symbols in it.
+  /// This is false if the section is not atomized at all (most ELF sections) or
+  /// if it is atomized based on its contents (MachO' __TEXT,__cstring for
+  /// example).
+  virtual bool isSectionAtomizableBySymbols(const MCSection &Section) const;
+
   virtual const MCExpr *getExprForPersonalitySymbol(const MCSymbol *Sym,
                                                     unsigned Encoding,
                                                     MCStreamer &Streamer) const;
@@ -421,6 +434,7 @@ public:
   const char *getLabelSuffix() const { return LabelSuffix; }
 
   bool useAssignmentForEHBegin() const { return UseAssignmentForEHBegin; }
+  bool needsLocalForSize() const { return NeedsLocalForSize; }
   const char *getPrivateGlobalPrefix() const { return PrivateGlobalPrefix; }
   const char *getPrivateLabelPrefix() const { return PrivateLabelPrefix; }
   bool hasLinkerPrivateGlobalPrefix() const {
@@ -457,6 +471,7 @@ public:
   LCOMM::LCOMMType getLCOMMDirectiveAlignmentType() const {
     return LCOMMDirectiveAlignmentType;
   }
+  bool hasFunctionAlignment() const { return HasFunctionAlignment; }
   bool hasDotTypeDotSizeDirective() const { return HasDotTypeDotSizeDirective; }
   bool hasSingleParameterDotFile() const { return HasSingleParameterDotFile; }
   bool hasIdentDirective() const { return HasIdentDirective; }
@@ -483,13 +498,16 @@ public:
   ExceptionHandling getExceptionHandlingType() const { return ExceptionsType; }
   WinEH::EncodingType getWinEHEncodingType() const { return WinEHEncodingType; }
 
-  /// Return true if the exception handling type uses the language-specific data
-  /// area (LSDA) format specified by the Itanium C++ ABI.
-  bool usesItaniumLSDAForExceptions() const {
+  /// Returns true if the exception handling method for the platform uses call
+  /// frame information to unwind.
+  bool usesCFIForEH() const {
     return (ExceptionsType == ExceptionHandling::DwarfCFI ||
             ExceptionsType == ExceptionHandling::ARM ||
-            // This Windows EH type uses the Itanium LSDA encoding.
-            ExceptionsType == ExceptionHandling::ItaniumWinEH);
+            ExceptionsType == ExceptionHandling::WinEH);
+  }
+
+  bool usesWindowsCFI() const {
+    return ExceptionsType == ExceptionHandling::WinEH;
   }
 
   bool doesDwarfUseRelocationsAcrossSections() const {

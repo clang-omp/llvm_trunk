@@ -12,8 +12,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "ARMMCAsmInfo.h"
-#include "llvm/Support/CommandLine.h"
 #include "llvm/ADT/Triple.h"
+#include "llvm/Support/CommandLine.h"
 
 using namespace llvm;
 
@@ -59,6 +59,7 @@ ARMELFMCAsmInfo::ARMELFMCAsmInfo(StringRef TT) {
 
   // Exceptions handling
   switch (TheTriple.getOS()) {
+  case Triple::Bitrig:
   case Triple::NetBSD:
     ExceptionsType = ExceptionHandling::DwarfCFI;
     break;

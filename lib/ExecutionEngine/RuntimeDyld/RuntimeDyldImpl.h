@@ -36,6 +36,14 @@ using namespace llvm::object;
 
 namespace llvm {
 
+  // Helper for extensive error checking in debug builds.
+inline std::error_code Check(std::error_code Err) {
+  if (Err) {
+    report_fatal_error(Err.message());
+  }
+  return Err;
+}
+
 class Twine;
 
 /// SectionEntry - represents a section emitted into memory by the dynamic
@@ -156,6 +164,25 @@ public:
   }
 };
 
+/// @brief Symbol info for RuntimeDyld. 
+class SymbolTableEntry : public JITSymbolBase {
+public:
+  SymbolTableEntry()
+    : JITSymbolBase(JITSymbolFlags::None), Offset(0), SectionID(0) {}
+
+  SymbolTableEntry(unsigned SectionID, uint64_t Offset, JITSymbolFlags Flags)
+    : JITSymbolBase(Flags), Offset(Offset), SectionID(SectionID) {}
+
+  unsigned getSectionID() const { return SectionID; }
+  uint64_t getOffset() const { return Offset; }
+
+private:
+  uint64_t Offset;
+  unsigned SectionID;
+};
+
+typedef StringMap<SymbolTableEntry> RTDyldSymbolTable;
+
 class RuntimeDyldImpl {
   friend class RuntimeDyld::LoadedObjectInfo;
   friend class RuntimeDyldCheckerImpl;
@@ -178,16 +205,11 @@ protected:
   // references it.
   typedef std::map<SectionRef, unsigned> ObjSectionToIDMap;
 
-  // A global symbol table for symbols from all loaded modules.  Maps the
-  // symbol name to a (SectionID, offset in section) pair.
-  typedef std::pair<unsigned, uintptr_t> SymbolLoc;
-  typedef StringMap<SymbolLoc> SymbolTableMap;
-  SymbolTableMap GlobalSymbolTable;
+  // A global symbol table for symbols from all loaded modules.
+  RTDyldSymbolTable GlobalSymbolTable;
 
-  // Pair representing the size and alignment requirement for a common symbol.
-  typedef std::pair<unsigned, unsigned> CommonSymbolInfo;
   // Keep a map of common symbols to their info pairs
-  typedef std::map<SymbolRef, CommonSymbolInfo> CommonSymbolMap;
+  typedef std::vector<SymbolRef> CommonSymbolList;
 
   // For each symbol, keep a list of relocations based on it. Anytime
   // its address is reassigned (the JIT re-compiled the function, e.g.),
@@ -287,9 +309,7 @@ protected:
   /// \brief Given the common symbols discovered in the object file, emit a
   /// new section for them and update the symbol mappings in the object and
   /// symbol table.
-  void emitCommonSymbols(const ObjectFile &Obj,
-                         const CommonSymbolMap &CommonSymbols,
-                         uint64_t TotalSize, SymbolTableMap &SymbolTable);
+  void emitCommonSymbols(const ObjectFile &Obj, CommonSymbolList &CommonSymbols);
 
   /// \brief Emits section data from the object file to the MemoryManager.
   /// \param IsCode if it's true then allocateCodeSection() will be
@@ -371,24 +391,26 @@ public:
   virtual std::unique_ptr<RuntimeDyld::LoadedObjectInfo>
   loadObject(const object::ObjectFile &Obj) = 0;
 
-  uint8_t* getSymbolAddress(StringRef Name) const {
+  uint8_t* getSymbolLocalAddress(StringRef Name) const {
     // FIXME: Just look up as a function for now. Overly simple of course.
     // Work in progress.
-    SymbolTableMap::const_iterator pos = GlobalSymbolTable.find(Name);
+    RTDyldSymbolTable::const_iterator pos = GlobalSymbolTable.find(Name);
     if (pos == GlobalSymbolTable.end())
       return nullptr;
-    SymbolLoc Loc = pos->second;
-    return getSectionAddress(Loc.first) + Loc.second;
+    const auto &SymInfo = pos->second;
+    return getSectionAddress(SymInfo.getSectionID()) + SymInfo.getOffset();
   }
 
-  uint64_t getSymbolLoadAddress(StringRef Name) const {
+  RuntimeDyld::SymbolInfo getSymbol(StringRef Name) const {
     // FIXME: Just look up as a function for now. Overly simple of course.
     // Work in progress.
-    SymbolTableMap::const_iterator pos = GlobalSymbolTable.find(Name);
+    RTDyldSymbolTable::const_iterator pos = GlobalSymbolTable.find(Name);
     if (pos == GlobalSymbolTable.end())
-      return 0;
-    SymbolLoc Loc = pos->second;
-    return getSectionLoadAddress(Loc.first) + Loc.second;
+      return nullptr;
+    const auto &SymEntry = pos->second;
+    uint64_t TargetAddr =
+      getSectionLoadAddress(SymEntry.getSectionID()) + SymEntry.getOffset();
+    return RuntimeDyld::SymbolInfo(TargetAddr, SymEntry.getFlags());
   }
 
   void resolveRelocations();

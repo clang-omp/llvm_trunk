@@ -99,6 +99,8 @@ public:
 class BitcodeReaderMDValueList {
   unsigned NumFwdRefs;
   bool AnyFwdRefs;
+  unsigned MinFwdRef;
+  unsigned MaxFwdRef;
   std::vector<TrackingMDRef> MDValuePtrs;
 
   LLVMContext &Context;
@@ -132,6 +134,7 @@ public:
 
 class BitcodeReader : public GVMaterializer {
   LLVMContext &Context;
+  DiagnosticHandlerFunction DiagnosticHandler;
   Module *TheModule;
   std::unique_ptr<MemoryBuffer> Buffer;
   std::unique_ptr<BitstreamReader> StreamFile;
@@ -210,18 +213,14 @@ class BitcodeReader : public GVMaterializer {
   SmallPtrSet<const Function *, 4> BlockAddressesTaken;
 
 public:
-  std::error_code Error(BitcodeError E) { return make_error_code(E); }
+  std::error_code Error(BitcodeError E, const Twine &Message);
+  std::error_code Error(BitcodeError E);
+  std::error_code Error(const Twine &Message);
 
-  explicit BitcodeReader(MemoryBuffer *buffer, LLVMContext &C)
-      : Context(C), TheModule(nullptr), Buffer(buffer), LazyStreamer(nullptr),
-        NextUnreadBit(0), SeenValueSymbolTable(false), ValueList(C),
-        MDValueList(C), SeenFirstFunctionBody(false), UseRelativeIDs(false),
-        WillMaterializeAllForwardRefs(false) {}
-  explicit BitcodeReader(DataStreamer *streamer, LLVMContext &C)
-      : Context(C), TheModule(nullptr), Buffer(nullptr), LazyStreamer(streamer),
-        NextUnreadBit(0), SeenValueSymbolTable(false), ValueList(C),
-        MDValueList(C), SeenFirstFunctionBody(false), UseRelativeIDs(false),
-        WillMaterializeAllForwardRefs(false) {}
+  explicit BitcodeReader(MemoryBuffer *buffer, LLVMContext &C,
+                         DiagnosticHandlerFunction DiagnosticHandler);
+  explicit BitcodeReader(DataStreamer *streamer, LLVMContext &C,
+                         DiagnosticHandlerFunction DiagnosticHandler);
   ~BitcodeReader() { FreeState(); }
 
   std::error_code materializeForwardReferencedFunctions();
@@ -336,6 +335,10 @@ private:
     return getFnValueByID(ValNo, Ty);
   }
 
+  /// Converts alignment exponent (i.e. power of two (or zero)) to the
+  /// corresponding alignment to use. If alignment is too large, returns
+  /// a corresponding error code.
+  std::error_code parseAlignmentValue(uint64_t Exponent, unsigned &Alignment);
   std::error_code ParseAttrKind(uint64_t Code, Attribute::AttrKind *Kind);
   std::error_code ParseModule(bool Resume);
   std::error_code ParseAttributeBlock();

@@ -33,7 +33,6 @@ public:
                        CodeGenOpt::Level OL);
   ~SystemZTargetMachine() override;
 
-  // Override TargetMachine.
   const SystemZSubtarget *getSubtargetImpl() const override {
     return &Subtarget;
   }

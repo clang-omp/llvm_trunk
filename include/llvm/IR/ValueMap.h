@@ -86,8 +86,8 @@ class ValueMap {
   MapT Map;
   std::unique_ptr<MDMapT> MDMap;
   ExtraData Data;
-  ValueMap(const ValueMap&) LLVM_DELETED_FUNCTION;
-  ValueMap& operator=(const ValueMap&) LLVM_DELETED_FUNCTION;
+  ValueMap(const ValueMap&) = delete;
+  ValueMap& operator=(const ValueMap&) = delete;
 public:
   typedef KeyT key_type;
   typedef ValueT mapped_type;
@@ -224,6 +224,9 @@ class ValueMapCallbackVH : public CallbackVH {
       : CallbackVH(const_cast<Value*>(static_cast<const Value*>(Key))),
         Map(Map) {}
 
+  // Private constructor used to create empty/tombstone DenseMap keys.
+  ValueMapCallbackVH(Value *V) : CallbackVH(V), Map(nullptr) {}
+
 public:
   KeyT Unwrap() const { return cast_or_null<KeySansPointerT>(getValPtr()); }
 
@@ -266,19 +269,18 @@ public:
 template<typename KeyT, typename ValueT, typename Config>
 struct DenseMapInfo<ValueMapCallbackVH<KeyT, ValueT, Config> > {
   typedef ValueMapCallbackVH<KeyT, ValueT, Config> VH;
-  typedef DenseMapInfo<KeyT> PointerInfo;
 
   static inline VH getEmptyKey() {
-    return VH(PointerInfo::getEmptyKey(), nullptr);
+    return VH(DenseMapInfo<Value *>::getEmptyKey());
   }
   static inline VH getTombstoneKey() {
-    return VH(PointerInfo::getTombstoneKey(), nullptr);
+    return VH(DenseMapInfo<Value *>::getTombstoneKey());
   }
   static unsigned getHashValue(const VH &Val) {
-    return PointerInfo::getHashValue(Val.Unwrap());
+    return DenseMapInfo<KeyT>::getHashValue(Val.Unwrap());
   }
   static unsigned getHashValue(const KeyT &Val) {
-    return PointerInfo::getHashValue(Val);
+    return DenseMapInfo<KeyT>::getHashValue(Val);
   }
   static bool isEqual(const VH &LHS, const VH &RHS) {
     return LHS == RHS;

@@ -7,9 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 #include "DebugMap.h"
-
-#include "llvm/ADT/iterator_range.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/DataTypes.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
@@ -27,6 +26,9 @@ bool DebugMapObject::addSymbol(StringRef Name, uint64_t ObjectAddress,
                                uint64_t LinkedAddress) {
   auto InsertResult = Symbols.insert(
       std::make_pair(Name, SymbolMapping(ObjectAddress, LinkedAddress)));
+
+  if (InsertResult.second)
+    AddressToMapping[ObjectAddress] = &*InsertResult.first;
   return InsertResult.second;
 }
 
@@ -59,16 +61,25 @@ DebugMapObject &DebugMap::addDebugMapObject(StringRef ObjectFilePath) {
   return *Objects.back();
 }
 
-const DebugMapObject::SymbolMapping *
+const DebugMapObject::DebugMapEntry *
 DebugMapObject::lookupSymbol(StringRef SymbolName) const {
   StringMap<SymbolMapping>::const_iterator Sym = Symbols.find(SymbolName);
   if (Sym == Symbols.end())
     return nullptr;
-  return &Sym->getValue();
+  return &*Sym;
+}
+
+const DebugMapObject::DebugMapEntry *
+DebugMapObject::lookupObjectAddress(uint64_t Address) const {
+  auto Mapping = AddressToMapping.find(Address);
+  if (Mapping == AddressToMapping.end())
+    return nullptr;
+  return Mapping->getSecond();
 }
 
 void DebugMap::print(raw_ostream &OS) const {
-  OS << "DEBUG MAP:   object addr =>  executable addr\tsymbol name\n";
+  OS << "DEBUG MAP: " << BinaryTriple.getTriple()
+     << "\n\tobject addr =>  executable addr\tsymbol name\n";
   for (const auto &Obj : objects())
     Obj->print(OS);
   OS << "END DEBUG MAP\n";

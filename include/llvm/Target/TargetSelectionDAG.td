@@ -68,6 +68,18 @@ class SDTCisSubVecOfVec<int ThisOp, int OtherOp>
   int OtherOpNum = OtherOp;
 }
 
+// SDTCVecEltisVT - The specified operand is vector type with element type
+// of VT.
+class SDTCVecEltisVT<int OpNum, ValueType vt> : SDTypeConstraint<OpNum> {
+  ValueType VT = vt;
+}
+
+// SDTCisSameNumEltsAs - The two specified operands have identical number
+// of elements.
+class SDTCisSameNumEltsAs<int OpNum, int OtherOp> : SDTypeConstraint<OpNum> {
+  int OtherOperandNum = OtherOp;
+}
+
 //===----------------------------------------------------------------------===//
 // Selection DAG Type Profile definitions.
 //
@@ -371,6 +383,7 @@ def zext       : SDNode<"ISD::ZERO_EXTEND", SDTIntExtendOp>;
 def anyext     : SDNode<"ISD::ANY_EXTEND" , SDTIntExtendOp>;
 def trunc      : SDNode<"ISD::TRUNCATE"   , SDTIntTruncOp>;
 def bitconvert : SDNode<"ISD::BITCAST"    , SDTUnaryOp>;
+def addrspacecast : SDNode<"ISD::ADDRSPACECAST", SDTUnaryOp>;
 def extractelt : SDNode<"ISD::EXTRACT_VECTOR_ELT", SDTVecExtract>;
 def insertelt  : SDNode<"ISD::INSERT_VECTOR_ELT", SDTVecInsert>;
 
@@ -380,6 +393,7 @@ def fmul       : SDNode<"ISD::FMUL"       , SDTFPBinOp, [SDNPCommutative]>;
 def fdiv       : SDNode<"ISD::FDIV"       , SDTFPBinOp>;
 def frem       : SDNode<"ISD::FREM"       , SDTFPBinOp>;
 def fma        : SDNode<"ISD::FMA"        , SDTFPTernaryOp>;
+def fmad       : SDNode<"ISD::FMAD"       , SDTFPTernaryOp>;
 def fabs       : SDNode<"ISD::FABS"       , SDTFPUnaryOp>;
 def fminnum    : SDNode<"ISD::FMINNUM"    , SDTFPBinOp>;
 def fmaxnum    : SDNode<"ISD::FMAXNUM"    , SDTFPBinOp>;

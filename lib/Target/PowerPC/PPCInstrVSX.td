@@ -66,7 +66,7 @@ let hasSideEffects = 0 in { // VSX instructions don't have side effects.
 let Uses = [RM] in {
 
   // Load indexed instructions
-  let mayLoad = 1, canFoldAsLoad = 1 in {
+  let mayLoad = 1 in {
     def LXSDX : XX1Form<31, 588,
                         (outs vsfrc:$XT), (ins memrr:$src),
                         "lxsdx $XT, $src", IIC_LdStLFD,
@@ -97,12 +97,12 @@ let Uses = [RM] in {
     def STXVD2X : XX1Form<31, 972,
                          (outs), (ins vsrc:$XT, memrr:$dst),
                          "stxvd2x $XT, $dst", IIC_LdStSTFD,
-                         [(int_ppc_vsx_stxvd2x v2f64:$XT, xoaddr:$dst)]>;
+                         [(store v2f64:$XT, xoaddr:$dst)]>;
 
     def STXVW4X : XX1Form<31, 908,
                          (outs), (ins vsrc:$XT, memrr:$dst),
                          "stxvw4x $XT, $dst", IIC_LdStSTFD,
-                         [(int_ppc_vsx_stxvw4x v4i32:$XT, xoaddr:$dst)]>;
+                         [(store v4i32:$XT, xoaddr:$dst)]>;
   }
 
   // Add/Mul Instructions
@@ -891,9 +891,11 @@ def : Pat<(v4i32 (load xoaddr:$src)), (LXVW4X xoaddr:$src)>;
 def : Pat<(v2f64 (PPClxvd2x xoaddr:$src)), (LXVD2X xoaddr:$src)>;
 
 // Stores.
-def : Pat<(store v2f64:$rS, xoaddr:$dst), (STXVD2X $rS, xoaddr:$dst)>;
+def : Pat<(int_ppc_vsx_stxvd2x v2f64:$rS, xoaddr:$dst),
+          (STXVD2X $rS, xoaddr:$dst)>;
 def : Pat<(store v2i64:$rS, xoaddr:$dst), (STXVD2X $rS, xoaddr:$dst)>;
-def : Pat<(store v4i32:$rS, xoaddr:$dst), (STXVW4X $rS, xoaddr:$dst)>;
+def : Pat<(int_ppc_vsx_stxvw4x v4i32:$rS, xoaddr:$dst),
+          (STXVW4X $rS, xoaddr:$dst)>;
 def : Pat<(PPCstxvd2x v2f64:$rS, xoaddr:$dst), (STXVD2X $rS, xoaddr:$dst)>;
 
 // Permutes.
@@ -938,3 +940,28 @@ def : Pat<(int_ppc_vsx_xvdivdp v2f64:$A, v2f64:$B),
 } // AddedComplexity
 } // HasVSX
 
+// The following VSX instructions were introduced in Power ISA 2.07
+/* FIXME: if the operands are v2i64, these patterns will not match.
+   we should define new patterns or otherwise match the same patterns
+   when the elements are larger than i32.
+*/
+def HasP8Vector : Predicate<"PPCSubTarget->hasP8Vector()">;
+let Predicates = [HasP8Vector] in {
+let AddedComplexity = 400 in { // Prefer VSX patterns over non-VSX patterns.
+let isCommutable = 1 in {
+  def XXLEQV : XX3Form<60, 186,
+                       (outs vsrc:$XT), (ins vsrc:$XA, vsrc:$XB),
+                       "xxleqv $XT, $XA, $XB", IIC_VecGeneral,
+                       [(set v4i32:$XT, (vnot_ppc (xor v4i32:$XA, v4i32:$XB)))]>;
+  def XXLNAND : XX3Form<60, 178,
+                        (outs vsrc:$XT), (ins vsrc:$XA, vsrc:$XB),
+                        "xxlnand $XT, $XA, $XB", IIC_VecGeneral,
+                        [(set v4i32:$XT, (vnot_ppc (and v4i32:$XA,
+                                                    v4i32:$XB)))]>;
+  } // isCommutable
+def XXLORC : XX3Form<60, 170,
+                     (outs vsrc:$XT), (ins vsrc:$XA, vsrc:$XB),
+                     "xxlorc $XT, $XA, $XB", IIC_VecGeneral,
+                     [(set v4i32:$XT, (or v4i32:$XA, (vnot_ppc v4i32:$XB)))]>;
+} // AddedComplexity = 500
+} // HasP8Vector

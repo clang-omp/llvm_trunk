@@ -21,11 +21,16 @@ if(NOT LLVM_FORCE_USE_OLD_TOOLCHAIN)
       message(FATAL_ERROR "Host Clang version must be at least 3.1!")
     endif()
 
-    # Also test that we aren't using too old of a version of libstdc++ with the
-    # Clang compiler. This is tricky as there is no real way to check the
-    # version of libstdc++ directly. Instead we test for a known bug in
-    # libstdc++4.6 that is fixed in libstdc++4.7.
-    if(NOT LLVM_ENABLE_LIBCXX)
+    if (CMAKE_CXX_SIMULATE_ID MATCHES "MSVC")
+      if (CMAKE_CXX_SIMULATE_VERSION VERSION_LESS 18.0)
+        message(FATAL_ERROR "Host Clang must have at least -fms-compatibility-version=18.0")
+      endif()
+      set(CLANG_CL 1)
+    elseif(NOT LLVM_ENABLE_LIBCXX)
+      # Otherwise, test that we aren't using too old of a version of libstdc++
+      # with the Clang compiler. This is tricky as there is no real way to
+      # check the version of libstdc++ directly. Instead we test for a known
+      # bug in libstdc++4.6 that is fixed in libstdc++4.7.
       set(OLD_CMAKE_REQUIRED_FLAGS ${CMAKE_REQUIRED_FLAGS})
       set(OLD_CMAKE_REQUIRED_LIBRARIES ${CMAKE_REQUIRED_LIBRARIES})
       set(CMAKE_REQUIRED_FLAGS "-std=c++0x")
@@ -41,8 +46,11 @@ int main() { return (float)x; }"
       set(CMAKE_REQUIRED_LIBRARIES ${OLD_CMAKE_REQUIRED_LIBRARIES})
     endif()
   elseif(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
-    if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 17.0)
-      message(FATAL_ERROR "Host Visual Studio must be at least 2012 (MSVC 17.0)")
+    if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 18.0)
+      message(FATAL_ERROR "Host Visual Studio must be at least 2013")
+    elseif(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 18.0.31101)
+      message(WARNING "Host Visual Studio should at least be 2013 Update 4 (MSVC 18.0.31101)"
+        "  due to miscompiles from earlier versions")
     endif()
   endif()
 endif()
@@ -103,6 +111,15 @@ if(APPLE)
   # Darwin-specific linker flags for loadable modules.
   set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -Wl,-flat_namespace -Wl,-undefined -Wl,suppress")
 endif()
+
+# Pass -Wl,-z,defs. This makes sure all symbols are defined. Otherwise a DSO
+# build might work on ELF but fail on MachO/COFF.
+if(NOT (${CMAKE_SYSTEM_NAME} MATCHES "Darwin" OR WIN32 OR
+        ${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD") AND
+   NOT LLVM_USE_SANITIZER)
+  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,defs")
+endif()
+
 
 function(append value)
   foreach(variable ${ARGN})
@@ -395,11 +412,19 @@ if(LLVM_USE_SANITIZER)
     elseif (LLVM_USE_SANITIZER STREQUAL "Thread")
       append_common_sanitizer_flags()
       append("-fsanitize=thread" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
+    elseif (LLVM_USE_SANITIZER STREQUAL "Address;Undefined" OR
+            LLVM_USE_SANITIZER STREQUAL "Undefined;Address")
+      append_common_sanitizer_flags()
+      append("-fsanitize=address,undefined -fno-sanitize=vptr,function -fno-sanitize-recover"
+              CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
     else()
       message(WARNING "Unsupported value of LLVM_USE_SANITIZER: ${LLVM_USE_SANITIZER}")
     endif()
   else()
     message(WARNING "LLVM_USE_SANITIZER is not supported on this platform.")
+  endif()
+  if (LLVM_USE_SANITIZE_COVERAGE)
+    append("-fsanitize-coverage=4 -mllvm -sanitizer-coverage-8bit-counters=1" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
   endif()
 endif()
 

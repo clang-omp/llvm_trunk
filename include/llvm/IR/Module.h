@@ -219,16 +219,7 @@ private:
   std::string TargetTriple;       ///< Platform target triple Module compiled on
                                   ///< Format: (arch)(sub)-(vendor)-(sys0-(abi)
   void *NamedMDSymTab;            ///< NamedMDNode names.
-  // Allow lazy initialization in const method.
-  mutable RandomNumberGenerator *RNG; ///< The random number generator for this module.
-
-  // We need to keep the string because the C API expects us to own the string
-  // representation.
-  // Since we have it, we also use an empty string to represent a module without
-  // a DataLayout. If it has a DataLayout, these variables are in sync and the
-  // string is just a cache of getDataLayout()->getStringRepresentation().
-  std::string DataLayoutStr;
-  DataLayout DL;
+  DataLayout DL;                  ///< DataLayout associated with the module
 
   friend class Constant;
 
@@ -250,12 +241,20 @@ public:
   /// @returns the module identifier as a string
   const std::string &getModuleIdentifier() const { return ModuleID; }
 
+  /// \brief Get a short "name" for the module.
+  ///
+  /// This is useful for debugging or logging. It is essentially a convenience
+  /// wrapper around getModuleIdentifier().
+  StringRef getName() const { return ModuleID; }
+
   /// Get the data layout string for the module's target platform. This is
   /// equivalent to getDataLayout()->getStringRepresentation().
-  const std::string &getDataLayoutStr() const { return DataLayoutStr; }
+  const std::string getDataLayoutStr() const {
+    return DL.getStringRepresentation();
+  }
 
   /// Get the data layout for the module's target platform.
-  const DataLayout *getDataLayout() const;
+  const DataLayout &getDataLayout() const;
 
   /// Get the target triple which is a string describing the target host.
   /// @returns a string containing the target triple.
@@ -269,10 +268,16 @@ public:
   /// @returns a string containing the module-scope inline assembly blocks.
   const std::string &getModuleInlineAsm() const { return GlobalScopeAsm; }
 
-  /// Get the RandomNumberGenerator for this module. The RNG can be
-  /// seeded via -rng-seed=<uint64> and is salted with the ModuleID.
-  /// The returned RNG should not be shared across threads.
-  RandomNumberGenerator &getRNG() const;
+  /// Get a RandomNumberGenerator salted for use with this module. The
+  /// RNG can be seeded via -rng-seed=<uint64> and is salted with the
+  /// ModuleID and the provided pass salt. The returned RNG should not
+  /// be shared across threads or passes.
+  ///
+  /// A unique RNG per pass ensures a reproducible random stream even
+  /// when other randomness consuming passes are added or removed. In
+  /// addition, the random stream will be reproducible across LLVM
+  /// versions when the pass does not change.
+  RandomNumberGenerator *createRNG(const Pass* P) const;
 
 /// @}
 /// @name Module Level Mutators
@@ -283,7 +288,7 @@ public:
 
   /// Set the data layout
   void setDataLayout(StringRef Desc);
-  void setDataLayout(const DataLayout *Other);
+  void setDataLayout(const DataLayout &Other);
 
   /// Set the target triple.
   void setTargetTriple(StringRef T) { TargetTriple = T; }
@@ -619,6 +624,15 @@ public:
     return iterator_range<const_named_metadata_iterator>(named_metadata_begin(),
                                                          named_metadata_end());
   }
+
+  /// Destroy ConstantArrays in LLVMContext if they are not used.
+  /// ConstantArrays constructed during linking can cause quadratic memory
+  /// explosion. Releasing all unused constants can cause a 20% LTO compile-time
+  /// slowdown for a large application.
+  ///
+  /// NOTE: Constants are currently owned by LLVMContext. This can then only
+  /// be called where all uses of the LLVMContext are understood.
+  void dropTriviallyDeadConstantArrays();
 
 /// @}
 /// @name Utility functions for printing and dumping Module objects

@@ -111,8 +111,8 @@ struct ParseStatementInfo {
 
 /// \brief The concrete assembly parser instance.
 class AsmParser : public MCAsmParser {
-  AsmParser(const AsmParser &) LLVM_DELETED_FUNCTION;
-  void operator=(const AsmParser &) LLVM_DELETED_FUNCTION;
+  AsmParser(const AsmParser &) = delete;
+  void operator=(const AsmParser &) = delete;
 private:
   AsmLexer Lexer;
   MCContext &Ctx;
@@ -1298,6 +1298,9 @@ bool AsmParser::parseStatement(ParseStatementInfo &Info,
       Sym = getContext().GetOrCreateSymbol(IDVal);
     } else
       Sym = Ctx.CreateDirectionalLocalSymbol(LocalLabelVal);
+
+    Sym->redefineIfPossible();
+
     if (!Sym->isUndefined() || Sym->isVariable())
       return Error(IDLoc, "invalid symbol redefinition");
 
@@ -1595,14 +1598,18 @@ bool AsmParser::parseStatement(ParseStatementInfo &Info,
   // directive for the instruction.
   if (!HadError && getContext().getGenDwarfForAssembly() &&
       getContext().getGenDwarfSectionSyms().count(
-        getStreamer().getCurrentSection().first)) {
-
-    unsigned Line = SrcMgr.FindLineNumber(IDLoc, CurBuffer);
+          getStreamer().getCurrentSection().first)) {
+    unsigned Line;
+    if (ActiveMacros.empty())
+      Line = SrcMgr.FindLineNumber(IDLoc, CurBuffer);
+    else
+      Line = SrcMgr.FindLineNumber(ActiveMacros.back()->InstantiationLoc,
+                                   ActiveMacros.back()->ExitBuffer);
 
     // If we previously parsed a cpp hash file line comment then make sure the
     // current Dwarf File is for the CppHashFilename if not then emit the
     // Dwarf File table for it and adjust the line number for the .loc.
-    if (CppHashFilename.size() != 0) {
+    if (CppHashFilename.size()) {
       unsigned FileNumber = getStreamer().EmitDwarfFileDirective(
           0, StringRef(), CppHashFilename);
       getContext().setGenDwarfFileNumber(FileNumber);
@@ -2213,6 +2220,8 @@ bool AsmParser::parseAssignment(StringRef Name, bool allow_redef,
   } else
     Sym = getContext().GetOrCreateSymbol(Name);
 
+  Sym->setRedefinable(allow_redef);
+
   // Do the assignment.
   Out.EmitAssignment(Sym, Value);
   if (NoDeadStrip)
@@ -2782,7 +2791,7 @@ bool AsmParser::parseDirectiveFile(SMLoc DirectiveLoc) {
   if (FileNumber == -1)
     getStreamer().EmitFileDirective(Filename);
   else {
-    if (getContext().getGenDwarfForAssembly() == true)
+    if (getContext().getGenDwarfForAssembly())
       Error(DirectiveLoc,
             "input can't have .file dwarf directives when -g is "
             "used to generate dwarf debug info for assembly code");
@@ -3266,7 +3275,7 @@ bool AsmParser::parseDirectiveMacro(SMLoc DirectiveLoc) {
   MCAsmMacroParameters Parameters;
   while (getLexer().isNot(AsmToken::EndOfStatement)) {
 
-    if (Parameters.size() && Parameters.back().Vararg)
+    if (!Parameters.empty() && Parameters.back().Vararg)
       return Error(Lexer.getLoc(),
                    "Vararg parameter '" + Parameters.back().Name +
                    "' should be last one in the list of parameters.");
@@ -3627,21 +3636,27 @@ bool AsmParser::parseDirectiveSpace(StringRef IDVal) {
 }
 
 /// parseDirectiveLEB128
-/// ::= (.sleb128 | .uleb128) expression
+/// ::= (.sleb128 | .uleb128) [ expression (, expression)* ]
 bool AsmParser::parseDirectiveLEB128(bool Signed) {
   checkForValidSection();
   const MCExpr *Value;
 
-  if (parseExpression(Value))
-    return true;
+  for (;;) {
+    if (parseExpression(Value))
+      return true;
 
-  if (getLexer().isNot(AsmToken::EndOfStatement))
-    return TokError("unexpected token in directive");
+    if (Signed)
+      getStreamer().EmitSLEB128Value(Value);
+    else
+      getStreamer().EmitULEB128Value(Value);
 
-  if (Signed)
-    getStreamer().EmitSLEB128Value(Value);
-  else
-    getStreamer().EmitULEB128Value(Value);
+    if (getLexer().is(AsmToken::EndOfStatement))
+      break;
+
+    if (getLexer().isNot(AsmToken::Comma))
+      return TokError("unexpected token in directive");
+    Lex();
+  }
 
   return false;
 }

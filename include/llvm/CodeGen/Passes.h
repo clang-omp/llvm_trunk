@@ -214,7 +214,7 @@ public:
   ///
   /// This can also be used to plug a new MachineSchedStrategy into an instance
   /// of the standard ScheduleDAGMI:
-  ///   return new ScheduleDAGMI(C, new MyStrategy(C))
+  ///   return new ScheduleDAGMI(C, make_unique<MyStrategy>(C), /* IsPostRA= */false)
   ///
   /// Return NULL to select the default (generic) machine scheduler.
   virtual ScheduleDAGInstrs *
@@ -353,13 +353,6 @@ protected:
 /// List of target independent CodeGen pass IDs.
 namespace llvm {
   FunctionPass *createAtomicExpandPass(const TargetMachine *TM);
-
-  /// \brief Create a basic TargetTransformInfo analysis pass.
-  ///
-  /// This pass implements the target transform info analysis using the target
-  /// independent information available to the LLVM code generator.
-  ImmutablePass *
-  createBasicTargetTransformInfoPass(const TargetMachine *TM);
 
   /// createUnreachableBlockEliminationPass - The LLVM code generator does not
   /// work well with unreachable basic blocks (what live ranges make sense for a
@@ -517,10 +510,14 @@ namespace llvm {
   /// information.
   extern char &MachineBlockPlacementStatsID;
 
-  /// GCLowering Pass - Performs target-independent LLVM IR transformations for
-  /// highly portable strategies.
-  ///
+  /// GCLowering Pass - Used by gc.root to perform its default lowering
+  /// operations.
   FunctionPass *createGCLoweringPass();
+
+  /// ShadowStackGCLowering - Implements the custom lowering mechanism
+  /// used by the shadow stack GC.  Only runs on functions which opt in to
+  /// the shadow stack collector.
+  FunctionPass *createShadowStackGCLoweringPass();
 
   /// GCMachineCodeAnalysis - Target-independent pass to mark safe points
   /// in machine code. Must be added very late during code generation, just
@@ -569,6 +566,10 @@ namespace llvm {
   /// adapted to code generation.  Required if using dwarf exception handling.
   FunctionPass *createDwarfEHPass(const TargetMachine *TM);
 
+  /// createWinEHPass - Prepares personality functions used by MSVC on Windows,
+  /// in addition to the Itanium LSDA based personalities.
+  FunctionPass *createWinEHPass(const TargetMachine *TM);
+
   /// createSjLjEHPreparePass - This pass adapts exception handling code to use
   /// the GCC-style builtin setjmp/longjmp (sjlj) to handling EH control flow.
   ///
@@ -611,13 +612,13 @@ namespace llvm {
   ModulePass *createForwardControlFlowIntegrityPass();
 } // End llvm namespace
 
-/// This initializer registers TargetMachine constructor, so the pass being
-/// initialized can use target dependent interfaces. Please do not move this
-/// macro to be together with INITIALIZE_PASS, which is a complete target
-/// independent initializer, and we don't want to make libScalarOpts depend
-/// on libCodeGen.
-#define INITIALIZE_TM_PASS(passName, arg, name, cfg, analysis) \
-  static void* initialize##passName##PassOnce(PassRegistry &Registry) { \
+/// Target machine pass initializer for passes with dependencies. Use with
+/// INITIALIZE_TM_PASS_END.
+#define INITIALIZE_TM_PASS_BEGIN INITIALIZE_PASS_BEGIN
+
+/// Target machine pass initializer for passes with dependencies. Use with
+/// INITIALIZE_TM_PASS_BEGIN.
+#define INITIALIZE_TM_PASS_END(passName, arg, name, cfg, analysis) \
     PassInfo *PI = new PassInfo(name, arg, & passName ::ID, \
       PassInfo::NormalCtor_t(callDefaultCtor< passName >), cfg, analysis, \
       PassInfo::TargetMachineCtor_t(callTargetMachineCtor< passName >)); \
@@ -627,5 +628,14 @@ namespace llvm {
   void llvm::initialize##passName##Pass(PassRegistry &Registry) { \
     CALL_ONCE_INITIALIZATION(initialize##passName##PassOnce) \
   }
+
+/// This initializer registers TargetMachine constructor, so the pass being
+/// initialized can use target dependent interfaces. Please do not move this
+/// macro to be together with INITIALIZE_PASS, which is a complete target
+/// independent initializer, and we don't want to make libScalarOpts depend
+/// on libCodeGen.
+#define INITIALIZE_TM_PASS(passName, arg, name, cfg, analysis) \
+    INITIALIZE_TM_PASS_BEGIN(passName, arg, name, cfg, analysis) \
+    INITIALIZE_TM_PASS_END(passName, arg, name, cfg, analysis)
 
 #endif
