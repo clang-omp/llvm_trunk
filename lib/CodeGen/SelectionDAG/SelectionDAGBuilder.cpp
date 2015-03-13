@@ -4966,31 +4966,6 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
     setValue(&I, Res);
     return nullptr;
   }
-  case Intrinsic::x86_avx2_vinserti128: {
-    EVT DestVT = TLI.getValueType(I.getType());
-    EVT ElVT = TLI.getValueType(I.getArgOperand(1)->getType());
-    uint64_t Idx = (cast<ConstantInt>(I.getArgOperand(2))->getZExtValue() & 1) *
-                   ElVT.getVectorNumElements();
-    Res =
-        DAG.getNode(ISD::INSERT_SUBVECTOR, sdl, DestVT,
-                    getValue(I.getArgOperand(0)), getValue(I.getArgOperand(1)),
-                    DAG.getConstant(Idx, TLI.getVectorIdxTy()));
-    setValue(&I, Res);
-    return nullptr;
-  }
-  case Intrinsic::x86_avx_vextractf128_pd_256:
-  case Intrinsic::x86_avx_vextractf128_ps_256:
-  case Intrinsic::x86_avx_vextractf128_si_256:
-  case Intrinsic::x86_avx2_vextracti128: {
-    EVT DestVT = TLI.getValueType(I.getType());
-    uint64_t Idx = (cast<ConstantInt>(I.getArgOperand(1))->getZExtValue() & 1) *
-                   DestVT.getVectorNumElements();
-    Res = DAG.getNode(ISD::EXTRACT_SUBVECTOR, sdl, DestVT,
-                      getValue(I.getArgOperand(0)),
-                      DAG.getConstant(Idx, TLI.getVectorIdxTy()));
-    setValue(&I, Res);
-    return nullptr;
-  }
   case Intrinsic::convertff:
   case Intrinsic::convertfsi:
   case Intrinsic::convertfui:
@@ -6598,14 +6573,8 @@ void SelectionDAGBuilder::visitInlineAsm(ImmutableCallSite CS) {
         // Memory output, or 'other' output (e.g. 'X' constraint).
         assert(OpInfo.isIndirect && "Memory output must be indirect operand");
 
-        unsigned ConstraintID =
-            TLI.getInlineAsmMemConstraint(OpInfo.ConstraintCode);
-        assert(ConstraintID != InlineAsm::Constraint_Unknown &&
-               "Failed to convert memory constraint code to constraint id.");
-
         // Add information to the INLINEASM node to know about this output.
         unsigned OpFlags = InlineAsm::getFlagWord(InlineAsm::Kind_Mem, 1);
-        OpFlags = InlineAsm::getFlagWordForMem(OpFlags, ConstraintID);
         AsmNodeOperands.push_back(DAG.getTargetConstant(OpFlags, MVT::i32));
         AsmNodeOperands.push_back(OpInfo.CallOperand);
         break;
@@ -6749,14 +6718,8 @@ void SelectionDAGBuilder::visitInlineAsm(ImmutableCallSite CS) {
         assert(InOperandVal.getValueType() == TLI.getPointerTy() &&
                "Memory operands expect pointer values");
 
-        unsigned ConstraintID =
-            TLI.getInlineAsmMemConstraint(OpInfo.ConstraintCode);
-        assert(ConstraintID != InlineAsm::Constraint_Unknown &&
-               "Failed to convert memory constraint code to constraint id.");
-
         // Add information to the INLINEASM node to know about this input.
         unsigned ResOpType = InlineAsm::getFlagWord(InlineAsm::Kind_Mem, 1);
-        ResOpType = InlineAsm::getFlagWordForMem(ResOpType, ConstraintID);
         AsmNodeOperands.push_back(DAG.getTargetConstant(ResOpType, MVT::i32));
         AsmNodeOperands.push_back(InOperandVal);
         break;
