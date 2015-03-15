@@ -181,7 +181,7 @@ class Verifier : public InstVisitor<Verifier>, VerifierSupport {
   DenseMap<Function *, std::pair<unsigned, unsigned>> FrameEscapeInfo;
 
 public:
-  explicit Verifier(raw_ostream &OS = dbgs())
+  explicit Verifier(raw_ostream &OS)
       : VerifierSupport(OS), Context(nullptr), PersonalityFn(nullptr),
         SawFrameEscape(false) {}
 
@@ -329,6 +329,8 @@ private:
   void visitUserOp1(Instruction &I);
   void visitUserOp2(Instruction &I) { visitUserOp1(I); }
   void visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI);
+  template <class DbgIntrinsicTy>
+  void visitDbgIntrinsic(StringRef Kind, DbgIntrinsicTy &DII);
   void visitAtomicCmpXchgInst(AtomicCmpXchgInst &CXI);
   void visitAtomicRMWInst(AtomicRMWInst &RMWI);
   void visitFenceInst(FenceInst &FI);
@@ -2795,10 +2797,14 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
            "constant int",
            &CI);
     break;
-  case Intrinsic::dbg_declare: {  // llvm.dbg.declare
-    Assert(CI.getArgOperand(0) && isa<MetadataAsValue>(CI.getArgOperand(0)),
+  case Intrinsic::dbg_declare: // llvm.dbg.declare
+    Assert(isa<MetadataAsValue>(CI.getArgOperand(0)),
            "invalid llvm.dbg.declare intrinsic call 1", &CI);
-  } break;
+    visitDbgIntrinsic("declare", cast<DbgDeclareInst>(CI));
+    break;
+  case Intrinsic::dbg_value: // llvm.dbg.value
+    visitDbgIntrinsic("value", cast<DbgValueInst>(CI));
+    break;
   case Intrinsic::memcpy:
   case Intrinsic::memmove:
   case Intrinsic::memset: {
@@ -3012,6 +3018,24 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
   };
 }
 
+template <class DbgIntrinsicTy>
+void Verifier::visitDbgIntrinsic(StringRef Kind, DbgIntrinsicTy &DII) {
+  auto *MD = cast<MetadataAsValue>(DII.getArgOperand(0))->getMetadata();
+  Assert(isa<ValueAsMetadata>(MD) ||
+             (isa<MDNode>(MD) && !cast<MDNode>(MD)->getNumOperands()),
+         "invalid llvm.dbg." + Kind + " intrinsic address/value", &DII, MD);
+  Assert(isa<MDLocalVariable>(DII.getRawVariable()),
+         "invalid llvm.dbg." + Kind + " intrinsic variable", &DII,
+         DII.getRawVariable());
+  Assert(isa<MDExpression>(DII.getRawExpression()),
+         "invalid llvm.dbg." + Kind + " intrinsic expression", &DII,
+         DII.getRawExpression());
+
+  // Don't call visitMDNode(), since that will recurse through operands.
+  visitMDLocalVariable(*DII.getVariable());
+  visitMDExpression(*DII.getExpression());
+}
+
 void DebugInfoVerifier::verifyDebugInfo() {
   if (!VerifyDebugInfo)
     return;
@@ -3112,7 +3136,7 @@ struct VerifierLegacyPass : public FunctionPass {
   Verifier V;
   bool FatalErrors;
 
-  VerifierLegacyPass() : FunctionPass(ID), FatalErrors(true) {
+  VerifierLegacyPass() : FunctionPass(ID), V(dbgs()), FatalErrors(true) {
     initializeVerifierLegacyPassPass(*PassRegistry::getPassRegistry());
   }
   explicit VerifierLegacyPass(bool FatalErrors)
