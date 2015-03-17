@@ -10472,17 +10472,17 @@ SDValue X86TargetLowering::LowerINSERT_VECTOR_ELT(SDValue Op,
   // If the vector is wider than 128 bits, extract the 128-bit subvector, insert
   // into that, and then insert the subvector back into the result.
   if (VT.is256BitVector() || VT.is512BitVector()) {
-    // Get the desired 128-bit vector half.
+    // Get the desired 128-bit vector chunk.
     SDValue V = Extract128BitVector(N0, IdxVal, DAG, dl);
 
-    // Insert the element into the desired half.
+    // Insert the element into the desired chunk.
     unsigned NumEltsIn128 = 128 / EltVT.getSizeInBits();
     unsigned IdxIn128 = IdxVal - (IdxVal / NumEltsIn128) * NumEltsIn128;
 
     V = DAG.getNode(ISD::INSERT_VECTOR_ELT, dl, V.getValueType(), V, N1,
                     DAG.getConstant(IdxIn128, MVT::i32));
 
-    // Insert the changed part back to the 256-bit vector
+    // Insert the changed part back into the bigger vector
     return Insert128BitVector(N0, V, IdxVal, DAG, dl);
   }
   assert(VT.is128BitVector() && "Only 128-bit vector types should be left!");
@@ -16162,21 +16162,19 @@ static SDValue LowerShift(SDValue Op, const X86Subtarget* Subtarget,
   SDLoc dl(Op);
   SDValue R = Op.getOperand(0);
   SDValue Amt = Op.getOperand(1);
-  SDValue V;
 
   assert(VT.isVector() && "Custom lowering only for vector shifts!");
   assert(Subtarget->hasSSE2() && "Only custom lower when we have SSE2!");
 
-  V = LowerScalarImmediateShift(Op, DAG, Subtarget);
-  if (V.getNode())
+  if (SDValue V = LowerScalarImmediateShift(Op, DAG, Subtarget))
     return V;
 
-  V = LowerScalarVariableShift(Op, DAG, Subtarget);
-  if (V.getNode())
+  if (SDValue V = LowerScalarVariableShift(Op, DAG, Subtarget))
       return V;
 
   if (Subtarget->hasAVX512() && (VT == MVT::v16i32 || VT == MVT::v8i64))
     return Op;
+
   // AVX2 has VPSLLV/VPSRAV/VPSRLV.
   if (Subtarget->hasInt256()) {
     if (Op.getOpcode() == ISD::SRL &&
@@ -17843,7 +17841,8 @@ X86TargetLowering::EmitVAARG64WithCustomInserter(MachineInstr *MI,
   // 9  ) EFLAGS (implicit-def)
 
   assert(MI->getNumOperands() == 10 && "VAARG_64 should have 10 operands!");
-  assert(X86::AddrNumOperands == 5 && "VAARG_64 assumes 5 address operands");
+  static_assert(X86::AddrNumOperands == 5,
+                "VAARG_64 assumes 5 address operands");
 
   unsigned DestReg = MI->getOperand(0).getReg();
   MachineOperand &Base = MI->getOperand(1);
@@ -22045,12 +22044,10 @@ static SDValue PerformAndCombine(SDNode *N, SelectionDAG &DAG,
   if (DCI.isBeforeLegalizeOps())
     return SDValue();
 
-  SDValue Zext = VectorZextCombine(N, DAG, DCI, Subtarget);
-  if (Zext.getNode())
+  if (SDValue Zext = VectorZextCombine(N, DAG, DCI, Subtarget))
     return Zext;
 
-  SDValue R = CMPEQCombine(N, DAG, DCI, Subtarget);
-  if (R.getNode())
+  if (SDValue R = CMPEQCombine(N, DAG, DCI, Subtarget))
     return R;
 
   EVT VT = N->getValueType(0);
