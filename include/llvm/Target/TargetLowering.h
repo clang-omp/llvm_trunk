@@ -976,6 +976,15 @@ public:
     return false;
   }
 
+  /// Return true if the pointer arguments to CI should be aligned by aligning
+  /// the object whose address is being passed. If so then MinSize is set to the
+  /// minimum size the object must be to be aligned and PrefAlign is set to the
+  /// preferred alignment.
+  virtual bool shouldAlignPointerArgs(CallInst * /*CI*/, unsigned & /*MinSize*/,
+                                      unsigned & /*PrefAlign*/) const {
+    return false;
+  }
+
   //===--------------------------------------------------------------------===//
   /// \name Helpers for TargetTransformInfo implementations
   /// @{
@@ -2627,7 +2636,9 @@ public:
 
   virtual unsigned
   getInlineAsmMemConstraint(const std::string &ConstraintCode) const {
-    if (ConstraintCode == "m")
+    if (ConstraintCode == "i")
+      return InlineAsm::Constraint_i;
+    else if (ConstraintCode == "m")
       return InlineAsm::Constraint_m;
     return InlineAsm::Constraint_Unknown;
   }
