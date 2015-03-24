@@ -426,7 +426,9 @@ SIInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
   }
 }
 
-unsigned SIInstrInfo::commuteOpcode(unsigned Opcode) const {
+unsigned SIInstrInfo::commuteOpcode(const MachineInstr &MI) const {
+  const unsigned Opcode = MI.getOpcode();
+
   int NewOpc;
 
   // Try to map original to commuted opcode
@@ -797,7 +799,7 @@ MachineInstr *SIInstrInfo::commuteInstruction(MachineInstr *MI,
   }
 
   if (MI)
-    MI->setDesc(get(commuteOpcode(MI->getOpcode())));
+    MI->setDesc(get(commuteOpcode(*MI)));
 
   return MI;
 }
