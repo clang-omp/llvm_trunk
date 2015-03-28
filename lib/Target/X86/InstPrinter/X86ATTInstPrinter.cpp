@@ -33,11 +33,8 @@ using namespace llvm;
 #define PRINT_ALIAS_INSTR
 #include "X86GenAsmWriter.inc"
 
-void X86ATTInstPrinter::printRegName(raw_ostream &OS,
-                                     unsigned RegNo) const {
-  OS << markup("<reg:")
-     << '%' << getRegisterName(RegNo)
-     << markup(">");
+void X86ATTInstPrinter::printRegName(raw_ostream &OS, unsigned RegNo) const {
+  OS << markup("<reg:") << '%' << getRegisterName(RegNo) << markup(">");
 }
 
 void X86ATTInstPrinter::printInst(const MCInst *MI, raw_ostream &OS,
@@ -169,8 +166,7 @@ void X86ATTInstPrinter::printOperand(const MCInst *MI, unsigned OpNo,
     printRegName(O, Op.getReg());
   } else if (Op.isImm()) {
     // Print X86 immediates as signed values.
-    O << markup("<imm:")
-      << '$' << formatImm((int64_t)Op.getImm())
+    O << markup("<imm:") << '$' << formatImm((int64_t)Op.getImm())
       << markup(">");
 
     // If there are no instruction-specific comments, add a comment clarifying
@@ -182,24 +178,22 @@ void X86ATTInstPrinter::printOperand(const MCInst *MI, unsigned OpNo,
 
   } else {
     assert(Op.isExpr() && "unknown operand kind in printOperand");
-    O << markup("<imm:")
-      << '$' << *Op.getExpr()
-      << markup(">");
+    O << markup("<imm:") << '$' << *Op.getExpr() << markup(">");
   }
 }
 
 void X86ATTInstPrinter::printMemReference(const MCInst *MI, unsigned Op,
                                           raw_ostream &O) {
-  const MCOperand &BaseReg  = MI->getOperand(Op+X86::AddrBaseReg);
-  const MCOperand &IndexReg = MI->getOperand(Op+X86::AddrIndexReg);
-  const MCOperand &DispSpec = MI->getOperand(Op+X86::AddrDisp);
-  const MCOperand &SegReg = MI->getOperand(Op+X86::AddrSegmentReg);
+  const MCOperand &BaseReg = MI->getOperand(Op + X86::AddrBaseReg);
+  const MCOperand &IndexReg = MI->getOperand(Op + X86::AddrIndexReg);
+  const MCOperand &DispSpec = MI->getOperand(Op + X86::AddrDisp);
+  const MCOperand &SegReg = MI->getOperand(Op + X86::AddrSegmentReg);
 
   O << markup("<mem:");
 
   // If this has a segment register, print it.
   if (SegReg.getReg()) {
-    printOperand(MI, Op+X86::AddrSegmentReg, O);
+    printOperand(MI, Op + X86::AddrSegmentReg, O);
     O << ':';
   }
 
@@ -215,16 +209,14 @@ void X86ATTInstPrinter::printMemReference(const MCInst *MI, unsigned Op,
   if (IndexReg.getReg() || BaseReg.getReg()) {
     O << '(';
     if (BaseReg.getReg())
-      printOperand(MI, Op+X86::AddrBaseReg, O);
+      printOperand(MI, Op + X86::AddrBaseReg, O);
 
     if (IndexReg.getReg()) {
       O << ',';
-      printOperand(MI, Op+X86::AddrIndexReg, O);
-      unsigned ScaleVal = MI->getOperand(Op+X86::AddrScaleAmt).getImm();
+      printOperand(MI, Op + X86::AddrIndexReg, O);
+      unsigned ScaleVal = MI->getOperand(Op + X86::AddrScaleAmt).getImm();
       if (ScaleVal != 1) {
-        O << ','
-          << markup("<imm:")
-          << ScaleVal // never printed in hex.
+        O << ',' << markup("<imm:") << ScaleVal // never printed in hex.
           << markup(">");
       }
     }
@@ -236,13 +228,13 @@ void X86ATTInstPrinter::printMemReference(const MCInst *MI, unsigned Op,
 
 void X86ATTInstPrinter::printSrcIdx(const MCInst *MI, unsigned Op,
                                     raw_ostream &O) {
-  const MCOperand &SegReg = MI->getOperand(Op+1);
+  const MCOperand &SegReg = MI->getOperand(Op + 1);
 
   O << markup("<mem:");
 
   // If this has a segment register, print it.
   if (SegReg.getReg()) {
-    printOperand(MI, Op+1, O);
+    printOperand(MI, Op + 1, O);
     O << ':';
   }
 
@@ -267,13 +259,13 @@ void X86ATTInstPrinter::printDstIdx(const MCInst *MI, unsigned Op,
 void X86ATTInstPrinter::printMemOffset(const MCInst *MI, unsigned Op,
                                        raw_ostream &O) {
   const MCOperand &DispSpec = MI->getOperand(Op);
-  const MCOperand &SegReg = MI->getOperand(Op+1);
+  const MCOperand &SegReg = MI->getOperand(Op + 1);
 
   O << markup("<mem:");
 
   // If this has a segment register, print it.
   if (SegReg.getReg()) {
-    printOperand(MI, Op+1, O);
+    printOperand(MI, Op + 1, O);
     O << ':';
   }
 
@@ -289,7 +281,6 @@ void X86ATTInstPrinter::printMemOffset(const MCInst *MI, unsigned Op,
 
 void X86ATTInstPrinter::printU8Imm(const MCInst *MI, unsigned Op,
                                    raw_ostream &O) {
-  O << markup("<imm:")
-    << '$' << formatImm(MI->getOperand(Op).getImm() & 0xff)
+  O << markup("<imm:") << '$' << formatImm(MI->getOperand(Op).getImm() & 0xff)
     << markup(">");
 }
