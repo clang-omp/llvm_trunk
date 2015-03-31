@@ -1629,23 +1629,23 @@ static void writeMDSubprogram(raw_ostream &Out, const MDSubprogram *N,
   MDFieldPrinter Printer(Out, TypePrinter, Machine, Context);
   Printer.printString("name", N->getName());
   Printer.printString("linkageName", N->getLinkageName());
-  Printer.printMetadata("scope", N->getScope(), /* ShouldSkipNull */ false);
-  Printer.printMetadata("file", N->getFile());
+  Printer.printMetadata("scope", N->getRawScope(), /* ShouldSkipNull */ false);
+  Printer.printMetadata("file", N->getRawFile());
   Printer.printInt("line", N->getLine());
-  Printer.printMetadata("type", N->getType());
+  Printer.printMetadata("type", N->getRawType());
   Printer.printBool("isLocal", N->isLocalToUnit());
   Printer.printBool("isDefinition", N->isDefinition());
   Printer.printInt("scopeLine", N->getScopeLine());
-  Printer.printMetadata("containingType", N->getContainingType());
+  Printer.printMetadata("containingType", N->getRawContainingType());
   Printer.printDwarfEnum("virtuality", N->getVirtuality(),
                          dwarf::VirtualityString);
   Printer.printInt("virtualIndex", N->getVirtualIndex());
   Printer.printDIFlags("flags", N->getFlags());
   Printer.printBool("isOptimized", N->isOptimized());
-  Printer.printMetadata("function", N->getFunction());
-  Printer.printMetadata("templateParams", N->getTemplateParams());
-  Printer.printMetadata("declaration", N->getDeclaration());
-  Printer.printMetadata("variables", N->getVariables());
+  Printer.printMetadata("function", N->getRawFunction());
+  Printer.printMetadata("templateParams", N->getRawTemplateParams());
+  Printer.printMetadata("declaration", N->getRawDeclaration());
+  Printer.printMetadata("variables", N->getRawVariables());
   Out << ")";
 }
 
@@ -1654,8 +1654,8 @@ static void writeMDLexicalBlock(raw_ostream &Out, const MDLexicalBlock *N,
                               const Module *Context) {
   Out << "!MDLexicalBlock(";
   MDFieldPrinter Printer(Out, TypePrinter, Machine, Context);
-  Printer.printMetadata("scope", N->getScope(), /* ShouldSkipNull */ false);
-  Printer.printMetadata("file", N->getFile());
+  Printer.printMetadata("scope", N->getRawScope(), /* ShouldSkipNull */ false);
+  Printer.printMetadata("file", N->getRawFile());
   Printer.printInt("line", N->getLine());
   Printer.printInt("column", N->getColumn());
   Out << ")";
@@ -1668,8 +1668,8 @@ static void writeMDLexicalBlockFile(raw_ostream &Out,
                                     const Module *Context) {
   Out << "!MDLexicalBlockFile(";
   MDFieldPrinter Printer(Out, TypePrinter, Machine, Context);
-  Printer.printMetadata("scope", N->getScope(), /* ShouldSkipNull */ false);
-  Printer.printMetadata("file", N->getFile());
+  Printer.printMetadata("scope", N->getRawScope(), /* ShouldSkipNull */ false);
+  Printer.printMetadata("file", N->getRawFile());
   Printer.printInt("discriminator", N->getDiscriminator(),
                    /* ShouldSkipZero */ false);
   Out << ")";
@@ -1681,8 +1681,8 @@ static void writeMDNamespace(raw_ostream &Out, const MDNamespace *N,
   Out << "!MDNamespace(";
   MDFieldPrinter Printer(Out, TypePrinter, Machine, Context);
   Printer.printString("name", N->getName());
-  Printer.printMetadata("scope", N->getScope(), /* ShouldSkipNull */ false);
-  Printer.printMetadata("file", N->getFile());
+  Printer.printMetadata("scope", N->getRawScope(), /* ShouldSkipNull */ false);
+  Printer.printMetadata("file", N->getRawFile());
   Printer.printInt("line", N->getLine());
   Out << ")";
 }
@@ -1778,12 +1778,12 @@ static void writeMDObjCProperty(raw_ostream &Out, const MDObjCProperty *N,
   Out << "!MDObjCProperty(";
   MDFieldPrinter Printer(Out, TypePrinter, Machine, Context);
   Printer.printString("name", N->getName());
-  Printer.printMetadata("file", N->getFile());
+  Printer.printMetadata("file", N->getRawFile());
   Printer.printInt("line", N->getLine());
   Printer.printString("setter", N->getSetterName());
   Printer.printString("getter", N->getGetterName());
   Printer.printInt("attributes", N->getAttributes());
-  Printer.printMetadata("type", N->getType());
+  Printer.printMetadata("type", N->getRawType());
   Out << ")";
 }
 
@@ -1794,8 +1794,8 @@ static void writeMDImportedEntity(raw_ostream &Out, const MDImportedEntity *N,
   MDFieldPrinter Printer(Out, TypePrinter, Machine, Context);
   Printer.printTag(N);
   Printer.printString("name", N->getName());
-  Printer.printMetadata("scope", N->getScope(), /* ShouldSkipNull */ false);
-  Printer.printMetadata("entity", N->getEntity());
+  Printer.printMetadata("scope", N->getRawScope(), /* ShouldSkipNull */ false);
+  Printer.printMetadata("entity", N->getRawEntity());
   Printer.printInt("line", N->getLine());
   Out << ")";
 }

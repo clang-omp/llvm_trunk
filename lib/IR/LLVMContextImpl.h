@@ -550,31 +550,32 @@ template <> struct MDNodeKeyImpl<MDSubprogram> {
         Function(Function), TemplateParams(TemplateParams),
         Declaration(Declaration), Variables(Variables) {}
   MDNodeKeyImpl(const MDSubprogram *N)
-      : Scope(N->getScope()), Name(N->getName()),
-        LinkageName(N->getLinkageName()), File(N->getFile()),
-        Line(N->getLine()), Type(N->getType()),
+      : Scope(N->getRawScope()), Name(N->getName()),
+        LinkageName(N->getLinkageName()), File(N->getRawFile()),
+        Line(N->getLine()), Type(N->getRawType()),
         IsLocalToUnit(N->isLocalToUnit()), IsDefinition(N->isDefinition()),
-        ScopeLine(N->getScopeLine()), ContainingType(N->getContainingType()),
+        ScopeLine(N->getScopeLine()), ContainingType(N->getRawContainingType()),
         Virtuality(N->getVirtuality()), VirtualIndex(N->getVirtualIndex()),
         Flags(N->getFlags()), IsOptimized(N->isOptimized()),
-        Function(N->getFunction()), TemplateParams(N->getTemplateParams()),
-        Declaration(N->getDeclaration()), Variables(N->getVariables()) {}
+        Function(N->getRawFunction()),
+        TemplateParams(N->getRawTemplateParams()),
+        Declaration(N->getRawDeclaration()), Variables(N->getRawVariables()) {}
 
   bool isKeyOf(const MDSubprogram *RHS) const {
-    return Scope == RHS->getScope() && Name == RHS->getName() &&
-           LinkageName == RHS->getLinkageName() && File == RHS->getFile() &&
-           Line == RHS->getLine() && Type == RHS->getType() &&
+    return Scope == RHS->getRawScope() && Name == RHS->getName() &&
+           LinkageName == RHS->getLinkageName() && File == RHS->getRawFile() &&
+           Line == RHS->getLine() && Type == RHS->getRawType() &&
            IsLocalToUnit == RHS->isLocalToUnit() &&
            IsDefinition == RHS->isDefinition() &&
            ScopeLine == RHS->getScopeLine() &&
-           ContainingType == RHS->getContainingType() &&
+           ContainingType == RHS->getRawContainingType() &&
            Virtuality == RHS->getVirtuality() &&
            VirtualIndex == RHS->getVirtualIndex() && Flags == RHS->getFlags() &&
            IsOptimized == RHS->isOptimized() &&
-           Function == RHS->getFunction() &&
-           TemplateParams == RHS->getTemplateParams() &&
-           Declaration == RHS->getDeclaration() &&
-           Variables == RHS->getVariables();
+           Function == RHS->getRawFunction() &&
+           TemplateParams == RHS->getRawTemplateParams() &&
+           Declaration == RHS->getRawDeclaration() &&
+           Variables == RHS->getRawVariables();
   }
   unsigned getHashValue() const {
     return hash_combine(Scope, Name, LinkageName, File, Line, Type,
@@ -593,11 +594,11 @@ template <> struct MDNodeKeyImpl<MDLexicalBlock> {
   MDNodeKeyImpl(Metadata *Scope, Metadata *File, unsigned Line, unsigned Column)
       : Scope(Scope), File(File), Line(Line), Column(Column) {}
   MDNodeKeyImpl(const MDLexicalBlock *N)
-      : Scope(N->getScope()), File(N->getFile()), Line(N->getLine()),
+      : Scope(N->getRawScope()), File(N->getRawFile()), Line(N->getLine()),
         Column(N->getColumn()) {}
 
   bool isKeyOf(const MDLexicalBlock *RHS) const {
-    return Scope == RHS->getScope() && File == RHS->getFile() &&
+    return Scope == RHS->getRawScope() && File == RHS->getRawFile() &&
            Line == RHS->getLine() && Column == RHS->getColumn();
   }
   unsigned getHashValue() const {
@@ -613,11 +614,11 @@ template <> struct MDNodeKeyImpl<MDLexicalBlockFile> {
   MDNodeKeyImpl(Metadata *Scope, Metadata *File, unsigned Discriminator)
       : Scope(Scope), File(File), Discriminator(Discriminator) {}
   MDNodeKeyImpl(const MDLexicalBlockFile *N)
-      : Scope(N->getScope()), File(N->getFile()),
+      : Scope(N->getRawScope()), File(N->getRawFile()),
         Discriminator(N->getDiscriminator()) {}
 
   bool isKeyOf(const MDLexicalBlockFile *RHS) const {
-    return Scope == RHS->getScope() && File == RHS->getFile() &&
+    return Scope == RHS->getRawScope() && File == RHS->getRawFile() &&
            Discriminator == RHS->getDiscriminator();
   }
   unsigned getHashValue() const {
@@ -634,11 +635,11 @@ template <> struct MDNodeKeyImpl<MDNamespace> {
   MDNodeKeyImpl(Metadata *Scope, Metadata *File, StringRef Name, unsigned Line)
       : Scope(Scope), File(File), Name(Name), Line(Line) {}
   MDNodeKeyImpl(const MDNamespace *N)
-      : Scope(N->getScope()), File(N->getFile()), Name(N->getName()),
+      : Scope(N->getRawScope()), File(N->getRawFile()), Name(N->getName()),
         Line(N->getLine()) {}
 
   bool isKeyOf(const MDNamespace *RHS) const {
-    return Scope == RHS->getScope() && File == RHS->getFile() &&
+    return Scope == RHS->getRawScope() && File == RHS->getRawFile() &&
            Name == RHS->getName() && Line == RHS->getLine();
   }
   unsigned getHashValue() const {
@@ -788,15 +789,15 @@ template <> struct MDNodeKeyImpl<MDObjCProperty> {
       : Name(Name), File(File), Line(Line), GetterName(GetterName),
         SetterName(SetterName), Attributes(Attributes), Type(Type) {}
   MDNodeKeyImpl(const MDObjCProperty *N)
-      : Name(N->getName()), File(N->getFile()), Line(N->getLine()),
+      : Name(N->getName()), File(N->getRawFile()), Line(N->getLine()),
         GetterName(N->getGetterName()), SetterName(N->getSetterName()),
-        Attributes(N->getAttributes()), Type(N->getType()) {}
+        Attributes(N->getAttributes()), Type(N->getRawType()) {}
 
   bool isKeyOf(const MDObjCProperty *RHS) const {
-    return Name == RHS->getName() && File == RHS->getFile() &&
+    return Name == RHS->getName() && File == RHS->getRawFile() &&
            Line == RHS->getLine() && GetterName == RHS->getGetterName() &&
            SetterName == RHS->getSetterName() &&
-           Attributes == RHS->getAttributes() && Type == RHS->getType();
+           Attributes == RHS->getAttributes() && Type == RHS->getRawType();
   }
   unsigned getHashValue() const {
     return hash_combine(Name, File, Line, GetterName, SetterName, Attributes,
@@ -815,12 +816,12 @@ template <> struct MDNodeKeyImpl<MDImportedEntity> {
                 StringRef Name)
       : Tag(Tag), Scope(Scope), Entity(Entity), Line(Line), Name(Name) {}
   MDNodeKeyImpl(const MDImportedEntity *N)
-      : Tag(N->getTag()), Scope(N->getScope()), Entity(N->getEntity()),
+      : Tag(N->getTag()), Scope(N->getRawScope()), Entity(N->getRawEntity()),
         Line(N->getLine()), Name(N->getName()) {}
 
   bool isKeyOf(const MDImportedEntity *RHS) const {
-    return Tag == RHS->getTag() && Scope == RHS->getScope() &&
-           Entity == RHS->getEntity() && Line == RHS->getLine() &&
+    return Tag == RHS->getTag() && Scope == RHS->getRawScope() &&
+           Entity == RHS->getRawEntity() && Line == RHS->getLine() &&
            Name == RHS->getName();
   }
   unsigned getHashValue() const {

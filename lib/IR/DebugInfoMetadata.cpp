@@ -238,6 +238,12 @@ MDCompileUnit *MDCompileUnit::getImpl(
       (SourceLanguage, IsOptimized, RuntimeVersion, EmissionKind), Ops);
 }
 
+MDSubprogram *MDLocalScope::getSubprogram() const {
+  if (auto *Block = dyn_cast<MDLexicalBlockBase>(this))
+    return Block->getScope()->getSubprogram();
+  return const_cast<MDSubprogram *>(cast<MDSubprogram>(this));
+}
+
 MDSubprogram *MDSubprogram::getImpl(
     LLVMContext &Context, Metadata *Scope, MDString *Name,
     MDString *LinkageName, Metadata *File, unsigned Line, Metadata *Type,
@@ -272,6 +278,7 @@ MDLexicalBlock *MDLexicalBlock::getImpl(LLVMContext &Context, Metadata *Scope,
                                         Metadata *File, unsigned Line,
                                         unsigned Column, StorageType Storage,
                                         bool ShouldCreate) {
+  assert(Scope && "Expected scope");
   DEFINE_GETIMPL_LOOKUP(MDLexicalBlock, (Scope, File, Line, Column));
   Metadata *Ops[] = {File, Scope};
   DEFINE_GETIMPL_STORE(MDLexicalBlock, (Line, Column), Ops);
@@ -282,6 +289,7 @@ MDLexicalBlockFile *MDLexicalBlockFile::getImpl(LLVMContext &Context,
                                                 unsigned Discriminator,
                                                 StorageType Storage,
                                                 bool ShouldCreate) {
+  assert(Scope && "Expected scope");
   DEFINE_GETIMPL_LOOKUP(MDLexicalBlockFile, (Scope, File, Discriminator));
   Metadata *Ops[] = {File, Scope};
   DEFINE_GETIMPL_STORE(MDLexicalBlockFile, (Discriminator), Ops);

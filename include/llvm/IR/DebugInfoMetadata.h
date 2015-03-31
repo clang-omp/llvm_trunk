@@ -78,6 +78,16 @@ protected:
 public:
   unsigned getTag() const { return SubclassData16; }
 
+  /// \brief Debug info flags.
+  ///
+  /// The three accessibility flags are mutually exclusive and rolled together
+  /// in the first two bits.
+  enum DIFlags {
+#define HANDLE_DI_FLAG(ID, NAME) Flag##NAME = ID,
+#include "llvm/IR/DebugInfoFlags.def"
+    FlagAccessibility = FlagPrivate | FlagProtected | FlagPublic
+  };
+
   static bool classof(const Metadata *MD) {
     switch (MD->getMetadataID()) {
     default:
@@ -282,8 +292,7 @@ protected:
   ~MDScope() {}
 
 public:
-  // FIXME: Downcast to MDFile once we've verified all subclasses.
-  Metadata *getFile() const { return getRawFile(); }
+  MDFile *getFile() const { return cast_or_null<MDFile>(getRawFile()); }
 
   /// \brief Return the raw underlying file.
   ///
@@ -392,9 +401,6 @@ public:
   uint64_t getAlignInBits() const { return AlignInBits; }
   uint64_t getOffsetInBits() const { return OffsetInBits; }
   unsigned getFlags() const { return Flags; }
-
-  // FIXME: Remove this once MDScope::getFile() does the same.
-  MDFile *getFile() const { return cast_or_null<MDFile>(getRawFile()); }
 
   Metadata *getScope() const { return getRawScope(); }
   StringRef getName() const { return getStringOperand(2); }
@@ -831,9 +837,6 @@ public:
 
   TempMDCompileUnit clone() const { return cloneImpl(); }
 
-  // FIXME: Remove this once MDScope::getFile() does the same.
-  MDFile *getFile() const { return cast_or_null<MDFile>(getRawFile()); }
-
   unsigned getSourceLanguage() const { return SourceLanguage; }
   bool isOptimized() const { return IsOptimized; }
   unsigned getRuntimeVersion() const { return RuntimeVersion; }
@@ -896,6 +899,12 @@ protected:
   ~MDLocalScope() {}
 
 public:
+  /// \brief Get the subprogram for this scope.
+  ///
+  /// Return this if it's an \a MDSubprogram; otherwise, look up the scope
+  /// chain.
+  MDSubprogram *getSubprogram() const;
+
   static bool classof(const Metadata *MD) {
     return MD->getMetadataID() == MDSubprogramKind ||
            MD->getMetadataID() == MDLexicalBlockKind ||
@@ -956,6 +965,16 @@ public:
     return cast_or_null<MDLocation>(getRawInlinedAt());
   }
 
+  /// \brief Get the scope where this is inlined.
+  ///
+  /// Walk through \a getInlinedAt() and return \a getScope() from the deepest
+  /// location.
+  MDLocalScope *getInlinedAtScope() const {
+    if (auto *IA = getInlinedAt())
+      return IA->getInlinedAtScope();
+    return getScope();
+  }
+
   Metadata *getRawScope() const { return getOperand(0); }
   Metadata *getRawInlinedAt() const {
     if (getNumOperands() == 2)
@@ -998,12 +1017,13 @@ class MDSubprogram : public MDLocalScope {
 
   static MDSubprogram *
   getImpl(LLVMContext &Context, Metadata *Scope, StringRef Name,
-          StringRef LinkageName, Metadata *File, unsigned Line, Metadata *Type,
-          bool IsLocalToUnit, bool IsDefinition, unsigned ScopeLine,
-          Metadata *ContainingType, unsigned Virtuality, unsigned VirtualIndex,
-          unsigned Flags, bool IsOptimized, Metadata *Function,
-          Metadata *TemplateParams, Metadata *Declaration, Metadata *Variables,
-          StorageType Storage, bool ShouldCreate = true) {
+          StringRef LinkageName, MDFile *File, unsigned Line,
+          MDSubroutineType *Type, bool IsLocalToUnit, bool IsDefinition,
+          unsigned ScopeLine, Metadata *ContainingType, unsigned Virtuality,
+          unsigned VirtualIndex, unsigned Flags, bool IsOptimized,
+          ConstantAsMetadata *Function, MDTuple *TemplateParams,
+          MDSubprogram *Declaration, MDTuple *Variables, StorageType Storage,
+          bool ShouldCreate = true) {
     return getImpl(Context, Scope, getCanonicalMDString(Context, Name),
                    getCanonicalMDString(Context, LinkageName), File, Line, Type,
                    IsLocalToUnit, IsDefinition, ScopeLine, ContainingType,
@@ -1032,12 +1052,13 @@ class MDSubprogram : public MDLocalScope {
 public:
   DEFINE_MDNODE_GET(
       MDSubprogram,
-      (Metadata * Scope, StringRef Name, StringRef LinkageName, Metadata *File,
-       unsigned Line, Metadata *Type, bool IsLocalToUnit, bool IsDefinition,
-       unsigned ScopeLine, Metadata *ContainingType, unsigned Virtuality,
-       unsigned VirtualIndex, unsigned Flags, bool IsOptimized,
-       Metadata *Function = nullptr, Metadata *TemplateParams = nullptr,
-       Metadata *Declaration = nullptr, Metadata *Variables = nullptr),
+      (Metadata * Scope, StringRef Name, StringRef LinkageName, MDFile *File,
+       unsigned Line, MDSubroutineType *Type, bool IsLocalToUnit,
+       bool IsDefinition, unsigned ScopeLine, Metadata *ContainingType,
+       unsigned Virtuality, unsigned VirtualIndex, unsigned Flags,
+       bool IsOptimized, ConstantAsMetadata *Function = nullptr,
+       MDTuple *TemplateParams = nullptr, MDSubprogram *Declaration = nullptr,
+       MDTuple *Variables = nullptr),
       (Scope, Name, LinkageName, File, Line, Type, IsLocalToUnit, IsDefinition,
        ScopeLine, ContainingType, Virtuality, VirtualIndex, Flags, IsOptimized,
        Function, TemplateParams, Declaration, Variables))
@@ -1065,7 +1086,7 @@ public:
   bool isDefinition() const { return IsDefinition; }
   bool isOptimized() const { return IsOptimized; }
 
-  Metadata *getScope() const { return getOperand(1); }
+  Metadata *getScope() const { return getRawScope(); }
 
   StringRef getName() const { return getStringOperand(2); }
   StringRef getDisplayName() const { return getStringOperand(3); }
@@ -1074,13 +1095,31 @@ public:
   MDString *getRawName() const { return getOperandAs<MDString>(2); }
   MDString *getRawLinkageName() const { return getOperandAs<MDString>(4); }
 
-  Metadata *getType() const { return getOperand(5); }
-  Metadata *getContainingType() const { return getOperand(6); }
+  MDSubroutineType *getType() const {
+    return cast_or_null<MDSubroutineType>(getRawType());
+  }
+  Metadata *getContainingType() const { return getRawContainingType(); }
 
-  Metadata *getFunction() const { return getOperand(7); }
-  Metadata *getTemplateParams() const { return getOperand(8); }
-  Metadata *getDeclaration() const { return getOperand(9); }
-  Metadata *getVariables() const { return getOperand(10); }
+  ConstantAsMetadata *getFunction() const {
+    return cast_or_null<ConstantAsMetadata>(getRawFunction());
+  }
+  MDTuple *getTemplateParams() const {
+    return cast_or_null<MDTuple>(getRawTemplateParams());
+  }
+  MDSubprogram *getDeclaration() const {
+    return cast_or_null<MDSubprogram>(getRawDeclaration());
+  }
+  MDTuple *getVariables() const {
+    return cast_or_null<MDTuple>(getRawVariables());
+  }
+
+  Metadata *getRawScope() const { return getOperand(1); }
+  Metadata *getRawType() const { return getOperand(5); }
+  Metadata *getRawContainingType() const { return getOperand(6); }
+  Metadata *getRawFunction() const { return getOperand(7); }
+  Metadata *getRawTemplateParams() const { return getOperand(8); }
+  Metadata *getRawDeclaration() const { return getOperand(9); }
+  Metadata *getRawVariables() const { return getOperand(10); }
 
   /// \brief Replace the function.
   ///
@@ -1106,7 +1145,9 @@ protected:
   ~MDLexicalBlockBase() {}
 
 public:
-  Metadata *getScope() const { return getOperand(1); }
+  MDLocalScope *getScope() const { return cast<MDLocalScope>(getRawScope()); }
+
+  Metadata *getRawScope() const { return getOperand(1); }
 
   static bool classof(const Metadata *MD) {
     return MD->getMetadataID() == MDLexicalBlockKind ||
@@ -1127,6 +1168,15 @@ class MDLexicalBlock : public MDLexicalBlockBase {
         Column(Column) {}
   ~MDLexicalBlock() {}
 
+  static MDLexicalBlock *getImpl(LLVMContext &Context, MDLocalScope *Scope,
+                                 MDFile *File, unsigned Line, unsigned Column,
+                                 StorageType Storage,
+                                 bool ShouldCreate = true) {
+    return getImpl(Context, static_cast<Metadata *>(Scope),
+                   static_cast<Metadata *>(File), Line, Column, Storage,
+                   ShouldCreate);
+  }
+
   static MDLexicalBlock *getImpl(LLVMContext &Context, Metadata *Scope,
                                  Metadata *File, unsigned Line, unsigned Column,
                                  StorageType Storage, bool ShouldCreate = true);
@@ -1137,6 +1187,9 @@ class MDLexicalBlock : public MDLexicalBlockBase {
   }
 
 public:
+  DEFINE_MDNODE_GET(MDLexicalBlock, (MDLocalScope * Scope, MDFile *File,
+                                     unsigned Line, unsigned Column),
+                    (Scope, File, Line, Column))
   DEFINE_MDNODE_GET(MDLexicalBlock, (Metadata * Scope, Metadata *File,
                                      unsigned Line, unsigned Column),
                     (Scope, File, Line, Column))
@@ -1163,6 +1216,15 @@ class MDLexicalBlockFile : public MDLexicalBlockBase {
         Discriminator(Discriminator) {}
   ~MDLexicalBlockFile() {}
 
+  static MDLexicalBlockFile *getImpl(LLVMContext &Context, MDLocalScope *Scope,
+                                     MDFile *File, unsigned Discriminator,
+                                     StorageType Storage,
+                                     bool ShouldCreate = true) {
+    return getImpl(Context, static_cast<Metadata *>(Scope),
+                   static_cast<Metadata *>(File), Discriminator, Storage,
+                   ShouldCreate);
+  }
+
   static MDLexicalBlockFile *getImpl(LLVMContext &Context, Metadata *Scope,
                                      Metadata *File, unsigned Discriminator,
                                      StorageType Storage,
@@ -1174,6 +1236,9 @@ class MDLexicalBlockFile : public MDLexicalBlockBase {
   }
 
 public:
+  DEFINE_MDNODE_GET(MDLexicalBlockFile, (MDLocalScope * Scope, MDFile *File,
+                                         unsigned Discriminator),
+                    (Scope, File, Discriminator))
   DEFINE_MDNODE_GET(MDLexicalBlockFile,
                     (Metadata * Scope, Metadata *File, unsigned Discriminator),
                     (Scope, File, Discriminator))
@@ -1200,8 +1265,8 @@ class MDNamespace : public MDScope {
         Line(Line) {}
   ~MDNamespace() {}
 
-  static MDNamespace *getImpl(LLVMContext &Context, Metadata *Scope,
-                              Metadata *File, StringRef Name, unsigned Line,
+  static MDNamespace *getImpl(LLVMContext &Context, MDScope *Scope,
+                              MDFile *File, StringRef Name, unsigned Line,
                               StorageType Storage, bool ShouldCreate = true) {
     return getImpl(Context, Scope, File, getCanonicalMDString(Context, Name),
                    Line, Storage, ShouldCreate);
@@ -1216,8 +1281,8 @@ class MDNamespace : public MDScope {
   }
 
 public:
-  DEFINE_MDNODE_GET(MDNamespace, (Metadata * Scope, Metadata *File,
-                                  StringRef Name, unsigned Line),
+  DEFINE_MDNODE_GET(MDNamespace, (MDScope * Scope, MDFile *File, StringRef Name,
+                                  unsigned Line),
                     (Scope, File, Name, Line))
   DEFINE_MDNODE_GET(MDNamespace, (Metadata * Scope, Metadata *File,
                                   MDString *Name, unsigned Line),
@@ -1226,9 +1291,10 @@ public:
   TempMDNamespace clone() const { return cloneImpl(); }
 
   unsigned getLine() const { return Line; }
-  Metadata *getScope() const { return getOperand(1); }
+  MDScope *getScope() const { return cast_or_null<MDScope>(getRawScope()); }
   StringRef getName() const { return getStringOperand(2); }
 
+  Metadata *getRawScope() const { return getOperand(1); }
   MDString *getRawName() const { return getOperandAs<MDString>(2); }
 
   static bool classof(const Metadata *MD) {
@@ -1678,9 +1744,9 @@ class MDObjCProperty : public DebugNode {
   ~MDObjCProperty() {}
 
   static MDObjCProperty *
-  getImpl(LLVMContext &Context, StringRef Name, Metadata *File, unsigned Line,
+  getImpl(LLVMContext &Context, StringRef Name, MDFile *File, unsigned Line,
           StringRef GetterName, StringRef SetterName, unsigned Attributes,
-          Metadata *Type, StorageType Storage, bool ShouldCreate = true) {
+          MDType *Type, StorageType Storage, bool ShouldCreate = true) {
     return getImpl(Context, getCanonicalMDString(Context, Name), File, Line,
                    getCanonicalMDString(Context, GetterName),
                    getCanonicalMDString(Context, SetterName), Attributes, Type,
@@ -1700,9 +1766,9 @@ class MDObjCProperty : public DebugNode {
 
 public:
   DEFINE_MDNODE_GET(MDObjCProperty,
-                    (StringRef Name, Metadata *File, unsigned Line,
+                    (StringRef Name, MDFile *File, unsigned Line,
                      StringRef GetterName, StringRef SetterName,
-                     unsigned Attributes, Metadata *Type),
+                     unsigned Attributes, MDType *Type),
                     (Name, File, Line, GetterName, SetterName, Attributes,
                      Type))
   DEFINE_MDNODE_GET(MDObjCProperty,
@@ -1717,14 +1783,16 @@ public:
   unsigned getLine() const { return Line; }
   unsigned getAttributes() const { return Attributes; }
   StringRef getName() const { return getStringOperand(0); }
-  Metadata *getFile() const { return getOperand(1); }
+  MDFile *getFile() const { return cast_or_null<MDFile>(getRawFile()); }
   StringRef getGetterName() const { return getStringOperand(2); }
   StringRef getSetterName() const { return getStringOperand(3); }
-  Metadata *getType() const { return getOperand(4); }
+  MDType *getType() const { return cast_or_null<MDType>(getRawType()); }
 
   MDString *getRawName() const { return getOperandAs<MDString>(0); }
+  Metadata *getRawFile() const { return getOperand(1); }
   MDString *getRawGetterName() const { return getOperandAs<MDString>(2); }
   MDString *getRawSetterName() const { return getOperandAs<MDString>(3); }
+  Metadata *getRawType() const { return getOperand(4); }
 
   static bool classof(const Metadata *MD) {
     return MD->getMetadataID() == MDObjCPropertyKind;
@@ -1743,7 +1811,7 @@ class MDImportedEntity : public DebugNode {
   ~MDImportedEntity() {}
 
   static MDImportedEntity *getImpl(LLVMContext &Context, unsigned Tag,
-                                   Metadata *Scope, Metadata *Entity,
+                                   MDScope *Scope, Metadata *Entity,
                                    unsigned Line, StringRef Name,
                                    StorageType Storage,
                                    bool ShouldCreate = true) {
@@ -1763,7 +1831,7 @@ class MDImportedEntity : public DebugNode {
 
 public:
   DEFINE_MDNODE_GET(MDImportedEntity,
-                    (unsigned Tag, Metadata *Scope, Metadata *Entity,
+                    (unsigned Tag, MDScope *Scope, Metadata *Entity,
                      unsigned Line, StringRef Name = ""),
                     (Tag, Scope, Entity, Line, Name))
   DEFINE_MDNODE_GET(MDImportedEntity,
@@ -1774,10 +1842,12 @@ public:
   TempMDImportedEntity clone() const { return cloneImpl(); }
 
   unsigned getLine() const { return Line; }
-  Metadata *getScope() const { return getOperand(0); }
-  Metadata *getEntity() const { return getOperand(1); }
+  MDScope *getScope() const { return cast_or_null<MDScope>(getRawScope()); }
+  Metadata *getEntity() const { return getRawEntity(); }
   StringRef getName() const { return getStringOperand(2); }
 
+  Metadata *getRawScope() const { return getOperand(0); }
+  Metadata *getRawEntity() const { return getOperand(1); }
   MDString *getRawName() const { return getOperandAs<MDString>(2); }
 
   static bool classof(const Metadata *MD) {
