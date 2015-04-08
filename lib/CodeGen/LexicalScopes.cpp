@@ -156,9 +156,11 @@ LexicalScopes::getOrCreateRegularScope(const MDLocalScope *Scope) {
                               std::forward_as_tuple(Parent, Scope, nullptr,
                                                     false)).first;
 
-  if (!Parent && DIDescriptor(Scope).isSubprogram() &&
-      DISubprogram(Scope).describes(MF->getFunction()))
+  if (!Parent && isa<MDSubprogram>(Scope) &&
+      DISubprogram(cast<MDSubprogram>(Scope)).describes(MF->getFunction())) {
+    assert(!CurrentFnLexicalScope);
     CurrentFnLexicalScope = &I->second;
+  }
 
   return &I->second;
 }
