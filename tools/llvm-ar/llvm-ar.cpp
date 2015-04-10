@@ -637,7 +637,10 @@ static void printRestOfMemberHeader(raw_fd_ostream &Out,
   printWithSpacePadding(Out, ModTime.toEpochTime(), 12);
   printWithSpacePadding(Out, UID, 6, true);
   printWithSpacePadding(Out, GID, 6, true);
-  printWithSpacePadding(Out, format("%o", Perms), 8);
+  // We observed that are some file systems that use the most significant bits
+  // in the permissions for non-standard stuff, causing the octal format to
+  // exceed 8 bytes, therefore we apply a mask of 8*3 bits.
+  printWithSpacePadding(Out, format("%o", Perms & 0xffffff), 8);
   printWithSpacePadding(Out, Size, 10);
   Out << "`\n";
 }
