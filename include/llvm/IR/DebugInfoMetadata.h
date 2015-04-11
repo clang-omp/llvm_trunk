@@ -416,6 +416,9 @@ protected:
 public:
   MDFile *getFile() const { return cast_or_null<MDFile>(getRawFile()); }
 
+  inline StringRef getFilename() const;
+  inline StringRef getDirectory() const;
+
   /// \brief Return the raw underlying file.
   ///
   /// An \a MDFile is an \a MDScope, but it doesn't point at a separate file
@@ -493,6 +496,18 @@ public:
     return MD->getMetadataID() == MDFileKind;
   }
 };
+
+StringRef MDScope::getFilename() const {
+  if (auto *F = getFile())
+    return F->getFilename();
+  return "";
+}
+
+StringRef MDScope::getDirectory() const {
+  if (auto *F = getFile())
+    return F->getDirectory();
+  return "";
+}
 
 /// \brief Base class for types.
 ///
@@ -1137,6 +1152,10 @@ public:
     return cast_or_null<MDLocation>(getRawInlinedAt());
   }
 
+  MDFile *getFile() const { return getScope()->getFile(); }
+  StringRef getFilename() const { return getScope()->getFilename(); }
+  StringRef getDirectory() const { return getScope()->getDirectory(); }
+
   /// \brief Get the scope where this is inlined.
   ///
   /// Walk through \a getInlinedAt() and return \a getScope() from the deepest
@@ -1145,6 +1164,23 @@ public:
     if (auto *IA = getInlinedAt())
       return IA->getInlinedAtScope();
     return getScope();
+  }
+
+  /// \brief Check whether this can be discriminated from another location.
+  ///
+  /// Check \c this can be discriminated from \c RHS in a linetable entry.
+  /// Scope and inlined-at chains are not recorded in the linetable, so they
+  /// cannot be used to distinguish basic blocks.
+  ///
+  /// The current implementation is weaker than it should be, since it just
+  /// checks filename and line.
+  ///
+  /// FIXME: Add a check for getDiscriminator().
+  /// FIXME: Add a check for getColumn().
+  /// FIXME: Change the getFilename() check to getFile() (or add one for
+  /// getDirectory()).
+  bool canDiscriminate(const MDLocation &RHS) const {
+    return getFilename() != RHS.getFilename() || getLine() != RHS.getLine();
   }
 
   Metadata *getRawScope() const { return getOperand(0); }
@@ -1628,6 +1664,17 @@ public:
   MDFile *getFile() const { return cast_or_null<MDFile>(getRawFile()); }
   MDTypeRef getType() const { return MDTypeRef(getRawType()); }
 
+  StringRef getFilename() const {
+    if (auto *F = getFile())
+      return F->getFilename();
+    return "";
+  }
+  StringRef getDirectory() const {
+    if (auto *F = getFile())
+      return F->getDirectory();
+    return "";
+  }
+
   Metadata *getRawScope() const { return getOperand(0); }
   MDString *getRawName() const { return getOperandAs<MDString>(1); }
   Metadata *getRawFile() const { return getOperand(2); }
@@ -2020,6 +2067,17 @@ public:
   StringRef getGetterName() const { return getStringOperand(2); }
   StringRef getSetterName() const { return getStringOperand(3); }
   MDType *getType() const { return cast_or_null<MDType>(getRawType()); }
+
+  StringRef getFilename() const {
+    if (auto *F = getFile())
+      return F->getFilename();
+    return "";
+  }
+  StringRef getDirectory() const {
+    if (auto *F = getFile())
+      return F->getDirectory();
+    return "";
+  }
 
   MDString *getRawName() const { return getOperandAs<MDString>(0); }
   Metadata *getRawFile() const { return getOperand(1); }

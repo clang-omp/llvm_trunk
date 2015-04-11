@@ -63,10 +63,6 @@ typedef DenseMap<const MDString *, MDNode *> DITypeIdentifierMap;
 /// This should not be stored in a container, because the underlying MDNode may
 /// change in certain situations.
 class DIDescriptor {
-  // Befriends DIRef so DIRef can befriend the protected member
-  // function: getFieldAs<DIRef>.
-  template <typename T> friend class DIRef;
-
 public:
   /// \brief Duplicated debug info flags.
   ///
@@ -79,11 +75,6 @@ public:
 
 protected:
   const MDNode *DbgNode;
-
-  DIDescriptor getDescriptorField(unsigned Elt) const;
-  template <typename DescTy> DescTy getFieldAs(unsigned Elt) const {
-    return DescTy(getDescriptorField(Elt));
-  }
 
 public:
   explicit DIDescriptor(const MDNode *N = nullptr) : DbgNode(N) {}
@@ -231,8 +222,8 @@ public:
   ///
   /// If the scope node has a name, return that, else return an empty string.
   StringRef getName() const;
-  StringRef getFilename() const;
-  StringRef getDirectory() const;
+  StringRef getFilename() const { return get()->getFilename(); }
+  StringRef getDirectory() const { return get()->getDirectory(); }
 
   /// \brief Generate a reference to this DIScope.
   ///
@@ -245,12 +236,6 @@ public:
 ///
 /// Abstracts over direct and identifier-based metadata references.
 template <typename T> class DIRef {
-  template <typename DescTy>
-  friend DescTy DIDescriptor::getFieldAs(unsigned Elt) const;
-  friend DIScopeRef DIScope::getContext() const;
-  friend DIScopeRef DIScope::getRef() const;
-  friend class DIType;
-
   /// \brief Val can be either a MDNode or a MDString.
   ///
   /// In the latter, MDString specifies the type identifier.
@@ -708,8 +693,8 @@ public:
   unsigned isDefinition() const { return get()->isDefinition(); }
 
   DIScope getContext() const { return DIScope(get()->getScope()); }
-  StringRef getFilename() const { return getFile().getFilename(); }
-  StringRef getDirectory() const { return getFile().getDirectory(); }
+  StringRef getFilename() const { return get()->getFilename(); }
+  StringRef getDirectory() const { return get()->getDirectory(); }
   DITypeRef getType() const { return get()->getType(); }
 
   GlobalVariable *getGlobal() const;
@@ -823,12 +808,9 @@ public:
   DILocation getOrigLocation() const {
     return DILocation(get()->getInlinedAt());
   }
-  StringRef getFilename() const { return getScope().getFilename(); }
-  StringRef getDirectory() const { return getScope().getDirectory(); }
-  bool atSameLineAs(const DILocation &Other) const {
-    return (getLineNumber() == Other.getLineNumber() &&
-            getFilename() == Other.getFilename());
-  }
+  StringRef getFilename() const { return get()->getFilename(); }
+  StringRef getDirectory() const { return get()->getDirectory(); }
+
   /// \brief Get the DWAF discriminator.
   ///
   /// DWARF discriminators are used to distinguish identical file locations for
