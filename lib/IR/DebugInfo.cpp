@@ -33,49 +33,9 @@
 using namespace llvm;
 using namespace llvm::dwarf;
 
-/// \brief Return the size reported by the variable's type.
-unsigned DIVariable::getSizeInBits(const DITypeIdentifierMap &Map) {
-  DIType Ty = getType().resolve(Map);
-  // Follow derived types until we reach a type that
-  // reports back a size.
-  while (isa<MDDerivedType>(Ty) && !Ty.getSizeInBits()) {
-    DIDerivedType DT = cast<MDDerivedType>(Ty);
-    Ty = DT.getTypeDerivedFrom().resolve(Map);
-  }
-  assert(Ty.getSizeInBits() && "type with size 0");
-  return Ty.getSizeInBits();
-}
-
 //===----------------------------------------------------------------------===//
 // Simple Descriptor Constructors and other Methods
 //===----------------------------------------------------------------------===//
-
-void DIDescriptor::replaceAllUsesWith(LLVMContext &, DIDescriptor D) {
-  assert(DbgNode && "Trying to replace an unverified type!");
-  assert(DbgNode->isTemporary() && "Expected temporary node");
-  TempMDNode Temp(get());
-
-  // Since we use a TrackingVH for the node, its easy for clients to manufacture
-  // legitimate situations where they want to replaceAllUsesWith() on something
-  // which, due to uniquing, has merged with the source. We shield clients from
-  // this detail by allowing a value to be replaced with replaceAllUsesWith()
-  // itself.
-  if (Temp.get() == D.get()) {
-    DbgNode = MDNode::replaceWithUniqued(std::move(Temp));
-    return;
-  }
-
-  Temp->replaceAllUsesWith(D.get());
-  DbgNode = D.get();
-}
-
-void DIDescriptor::replaceAllUsesWith(MDNode *D) {
-  assert(DbgNode && "Trying to replace an unverified type!");
-  assert(DbgNode != D && "This replacement should always happen");
-  assert(DbgNode->isTemporary() && "Expected temporary node");
-  TempMDNode Node(get());
-  Node->replaceAllUsesWith(D);
-}
 
 DIScopeRef DIScope::getRef() const { return MDScopeRef::get(get()); }
 
@@ -87,13 +47,6 @@ bool DIVariable::isInlinedFnArgument(const Function *CurFn) {
   // This variable is not inlined function argument if its scope
   // does not describe current function.
   return !SP.describes(CurFn);
-}
-
-Function *DISubprogram::getFunction() const {
-  if (auto *N = get())
-    if (auto *C = dyn_cast_or_null<ConstantAsMetadata>(N->getFunction()))
-      return dyn_cast<Function>(C->getValue());
-  return nullptr;
 }
 
 bool DISubprogram::describes(const Function *F) {
@@ -110,37 +63,6 @@ bool DISubprogram::describes(const Function *F) {
 
 GlobalVariable *DIGlobalVariable::getGlobal() const {
   return dyn_cast_or_null<GlobalVariable>(getConstant());
-}
-
-DIScopeRef DIScope::getContext() const {
-  if (DIType T = dyn_cast<MDType>(*this))
-    return T.getContext();
-
-  if (DISubprogram SP = dyn_cast<MDSubprogram>(*this))
-    return MDScopeRef(SP.getContext());
-
-  if (DILexicalBlock LB = dyn_cast<MDLexicalBlockBase>(*this))
-    return MDScopeRef(LB.getContext());
-
-  if (DINameSpace NS = dyn_cast<MDNamespace>(*this))
-    return MDScopeRef(NS.getContext());
-
-  assert((isa<MDFile>(*this) || isa<MDCompileUnit>(*this)) &&
-         "Unhandled type of scope.");
-  return MDScopeRef();
-}
-
-StringRef DIScope::getName() const {
-  if (DIType T = dyn_cast<MDType>(*this))
-    return T.getName();
-  if (DISubprogram SP = dyn_cast<MDSubprogram>(*this))
-    return SP.getName();
-  if (DINameSpace NS = dyn_cast<MDNamespace>(*this))
-    return NS.getName();
-  assert((isa<MDLexicalBlockBase>(*this) || isa<MDFile>(*this) ||
-          isa<MDCompileUnit>(*this)) &&
-         "Unhandled type of scope.");
-  return StringRef();
 }
 
 void DICompileUnit::replaceSubprograms(DIArray Subprograms) {

@@ -106,10 +106,6 @@ public:
 
   void print(raw_ostream &OS) const;
   void dump() const;
-
-  /// \brief Replace all uses of debug info referenced by this descriptor.
-  void replaceAllUsesWith(LLVMContext &VMContext, DIDescriptor D);
-  void replaceAllUsesWith(MDNode *D);
 };
 
 #define DECLARE_SIMPLIFY_DESCRIPTOR(DESC)                                      \
@@ -213,15 +209,8 @@ public:
     return *get();
   }
 
-  /// \brief Get the parent scope.
-  ///
-  /// Gets the parent scope for this scope node or returns a default
-  /// constructed scope.
-  DIScopeRef getContext() const;
-  /// \brief Get the scope name.
-  ///
-  /// If the scope node has a name, return that, else return an empty string.
-  StringRef getName() const;
+  inline DIScopeRef getContext() const;
+  StringRef getName() const { return get()->getName(); }
   StringRef getFilename() const { return get()->getFilename(); }
   StringRef getDirectory() const { return get()->getDirectory(); }
 
@@ -257,6 +246,8 @@ DIDescriptor DIRef<DIDescriptor>::resolve(const DITypeIdentifierMap &Map) const;
 template <>
 DIScope DIRef<DIScope>::resolve(const DITypeIdentifierMap &Map) const;
 template <> DIType DIRef<DIType>::resolve(const DITypeIdentifierMap &Map) const;
+
+DIScopeRef DIScope::getContext() const { return get()->getScope(); }
 
 /// \brief This is a wrapper for a type.
 ///
@@ -531,7 +522,7 @@ public:
   /// \brief Check if this provides debugging information for the function F.
   bool describes(const Function *F);
 
-  Function *getFunction() const;
+  Function *getFunction() const { return get()->getFunction(); }
 
   void replaceFunction(Function *F) {
     if (auto *N = get())
@@ -698,12 +689,7 @@ public:
   DITypeRef getType() const { return get()->getType(); }
 
   GlobalVariable *getGlobal() const;
-  Constant *getConstant() const {
-    if (auto *N = get())
-      if (auto *C = dyn_cast_or_null<ConstantAsMetadata>(N->getVariable()))
-        return C->getValue();
-    return nullptr;
-  }
+  Constant *getConstant() const { return get()->getVariable(); }
   DIDerivedType getStaticDataMemberDeclaration() const {
     return DIDerivedType(get()->getStaticDataMemberDeclaration());
   }
@@ -748,9 +734,6 @@ public:
 
   /// \brief Check if this is an inlined function argument.
   bool isInlinedFnArgument(const Function *CurFn);
-
-  /// \brief Return the size reported by the variable's type.
-  unsigned getSizeInBits(const DITypeIdentifierMap &Map);
 
   void printExtendedName(raw_ostream &OS) const;
 };
