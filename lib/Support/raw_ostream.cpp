@@ -525,7 +525,14 @@ raw_fd_ostream::raw_fd_ostream(int fd, bool shouldClose, bool unbuffered)
 
   // Get the starting position.
   off_t loc = ::lseek(FD, 0, SEEK_CUR);
+#ifdef LLVM_ON_WIN32
+  // MSVCRT's _lseek(SEEK_CUR) doesn't return -1 for pipes.
+  sys::fs::file_status Status;
+  std::error_code EC = status(FD, Status);
+  SupportsSeeking = !EC && Status.type() == sys::fs::file_type::regular_file;
+#else
   SupportsSeeking = loc != (off_t)-1;
+#endif
   if (!SupportsSeeking)
     pos = 0;
   else
@@ -703,7 +710,9 @@ raw_ostream &llvm::outs() {
   // Set buffer settings to model stdout behavior.
   // Delete the file descriptor when the program exits, forcing error
   // detection. If you don't want this behavior, don't use outs().
-  static raw_fd_ostream S(STDOUT_FILENO, true);
+  std::error_code EC;
+  static raw_fd_ostream S("-", EC, sys::fs::F_None);
+  assert(!EC);
   return S;
 }
 
