@@ -157,7 +157,7 @@ LexicalScopes::getOrCreateRegularScope(const MDLocalScope *Scope) {
                                                     false)).first;
 
   if (!Parent && isa<MDSubprogram>(Scope) &&
-      DISubprogram(cast<MDSubprogram>(Scope)).describes(MF->getFunction())) {
+      cast<MDSubprogram>(Scope)->describes(MF->getFunction())) {
     assert(!CurrentFnLexicalScope);
     CurrentFnLexicalScope = &I->second;
   }
