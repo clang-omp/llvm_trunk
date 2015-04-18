@@ -307,6 +307,7 @@ namespace {
     SDValue visitINSERT_SUBVECTOR(SDNode *N);
     SDValue visitMLOAD(SDNode *N);
     SDValue visitMSTORE(SDNode *N);
+    SDValue visitFP_TO_FP16(SDNode *N);
 
     SDValue XformToShuffleWithZero(SDNode *N);
     SDValue ReassociateOps(unsigned Opc, SDLoc DL, SDValue LHS, SDValue RHS);
@@ -1380,6 +1381,7 @@ SDValue DAGCombiner::visit(SDNode *N) {
   case ISD::INSERT_SUBVECTOR:   return visitINSERT_SUBVECTOR(N);
   case ISD::MLOAD:              return visitMLOAD(N);
   case ISD::MSTORE:             return visitMSTORE(N);
+  case ISD::FP_TO_FP16:         return visitFP_TO_FP16(N);
   }
   return SDValue();
 }
@@ -8161,6 +8163,11 @@ SDValue DAGCombiner::visitFP_EXTEND(SDNode *N) {
   if (isConstantFPBuildVectorOrConstantFP(N0))
     return DAG.getNode(ISD::FP_EXTEND, SDLoc(N), VT, N0);
 
+  // fold (fp_extend (fp16_to_fp op)) -> (fp16_to_fp op)
+  if (N0.getOpcode() == ISD::FP16_TO_FP &&
+      TLI.getOperationAction(ISD::FP16_TO_FP, VT) == TargetLowering::Legal)
+    return DAG.getNode(ISD::FP16_TO_FP, SDLoc(N), VT, N0.getOperand(0));
+
   // Turn fp_extend(fp_round(X, 1)) -> x since the fp_round doesn't affect the
   // value of X.
   if (N0.getOpcode() == ISD::FP_ROUND
@@ -11526,10 +11533,15 @@ static SDValue combineConcatVectorOfScalars(SDNode *N, SelectionDAG &DAG) {
     else
       return SDValue();
 
-    if (Ops.back().getValueType().isFloatingPoint())
+    // Note whether we encounter an integer or floating point scalar.
+    // If it's neither, bail out, it could be something weird like x86mmx.
+    EVT LastOpVT = Ops.back().getValueType();
+    if (LastOpVT.isFloatingPoint())
       AnyFP = true;
-    else
+    else if (LastOpVT.isInteger())
       AnyInteger = true;
+    else
+      return SDValue();
   }
 
   // If any of the operands is a floating point scalar bitcast to a vector,
@@ -11540,11 +11552,12 @@ static SDValue combineConcatVectorOfScalars(SDNode *N, SelectionDAG &DAG) {
     ScalarUndef = DAG.getNode(ISD::UNDEF, DL, SVT);
     if (AnyInteger) {
       for (SDValue &Op : Ops) {
-        if (Op.getValueType() != SVT) {
+        if (Op.getValueType() == SVT)
+          continue;
+        if (Op.getOpcode() == ISD::UNDEF)
+          Op = ScalarUndef;
+        else
           Op = DAG.getNode(ISD::BITCAST, DL, SVT, Op);
-          if (Op.getOpcode() == ISD::UNDEF)
-            Op = ScalarUndef;
-        }
       }
     }
   }
@@ -12339,6 +12352,16 @@ SDValue DAGCombiner::visitINSERT_SUBVECTOR(SDNode *N) {
       return DAG.getNode(ISD::CONCAT_VECTORS, SDLoc(N), VT,
                          N0.getOperand(0), N->getOperand(1));
   }
+
+  return SDValue();
+}
+
+SDValue DAGCombiner::visitFP_TO_FP16(SDNode *N) {
+  SDValue N0 = N->getOperand(0);
+
+  // fold (fp_to_fp16 (fp16_to_fp op)) -> op
+  if (N0->getOpcode() == ISD::FP16_TO_FP)
+    return N0->getOperand(0);
 
   return SDValue();
 }

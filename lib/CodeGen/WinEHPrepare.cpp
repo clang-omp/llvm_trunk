@@ -196,6 +196,9 @@ public:
   virtual CloningAction handleResume(ValueToValueMapTy &VMap,
                                      const ResumeInst *Resume,
                                      BasicBlock *NewBB) = 0;
+  virtual CloningAction handleCompare(ValueToValueMapTy &VMap,
+                                      const CmpInst *Compare,
+                                      BasicBlock *NewBB) = 0;
   virtual CloningAction handleLandingPad(ValueToValueMapTy &VMap,
                                          const LandingPadInst *LPad,
                                          BasicBlock *NewBB) = 0;
@@ -231,6 +234,8 @@ public:
                              BasicBlock *NewBB) override;
   CloningAction handleResume(ValueToValueMapTy &VMap, const ResumeInst *Resume,
                              BasicBlock *NewBB) override;
+  CloningAction handleCompare(ValueToValueMapTy &VMap,
+                              const CmpInst *Compare, BasicBlock *NewBB) override;
   CloningAction handleLandingPad(ValueToValueMapTy &VMap,
                                  const LandingPadInst *LPad,
                                  BasicBlock *NewBB) override;
@@ -267,6 +272,8 @@ public:
                              BasicBlock *NewBB) override;
   CloningAction handleResume(ValueToValueMapTy &VMap, const ResumeInst *Resume,
                              BasicBlock *NewBB) override;
+  CloningAction handleCompare(ValueToValueMapTy &VMap,
+                              const CmpInst *Compare, BasicBlock *NewBB) override;
   CloningAction handleLandingPad(ValueToValueMapTy &VMap,
                                  const LandingPadInst *LPad,
                                  BasicBlock *NewBB) override;
@@ -432,6 +439,10 @@ bool WinEHPrepare::prepareExceptionHandlers(
       InvokeInst *Invoke = cast<InvokeInst>(pred->getTerminator());
       Invoke->setUnwindDest(NewLPadBB);
     }
+
+    // If anyone is still using the old landingpad value, just give them undef
+    // instead. The eh pointer and selector values are not real.
+    LPad->replaceAllUsesWith(UndefValue::get(LPad->getType()));
 
     // Replace the mapping of any nested landing pad that previously mapped
     // to this landing pad with a referenced to the cloned version.
@@ -636,6 +647,11 @@ void WinEHPrepare::promoteLandingPadValues(LandingPadInst *LPad) {
     PromoteMemToReg(EHAllocas, *DT);
     EHAllocas.clear();
   }
+
+  // After promotion, some extracts may be trivially dead. Remove them.
+  SmallVector<Value *, 4> Users(LPad->user_begin(), LPad->user_end());
+  for (auto *U : Users)
+    RecursivelyDeleteTriviallyDeadInstructions(U);
 }
 
 void WinEHPrepare::completeNestedLandingPad(Function *ParentFn,
@@ -909,7 +925,7 @@ bool WinEHPrepare::outlineHandler(ActionHandler *Action, Function *SrcFn,
     // save the association of the blocks in LPadTargetBlocks.  The
     // return instructions which are created from these branches will be
     // replaced after all landing pads have been outlined.
-    for (const auto &MapEntry : VMap) {
+    for (const auto MapEntry : VMap) {
       // VMap maps all values and blocks that were just cloned, but dead
       // blocks which were pruned will map to nullptr.
       if (!isa<BasicBlock>(MapEntry.first) || MapEntry.second == nullptr)
@@ -1044,6 +1060,9 @@ CloningDirector::CloningAction WinEHCloningDirectorBase::handleInstruction(
   if (auto *Resume = dyn_cast<ResumeInst>(Inst))
     return handleResume(VMap, Resume, NewBB);
 
+  if (auto *Cmp = dyn_cast<CmpInst>(Inst))
+    return handleCompare(VMap, Cmp, NewBB);
+
   if (match(Inst, m_Intrinsic<Intrinsic::eh_begincatch>()))
     return handleBeginCatch(VMap, Inst, NewBB);
   if (match(Inst, m_Intrinsic<Intrinsic::eh_endcatch>()))
@@ -1164,6 +1183,30 @@ WinEHCatchDirector::handleResume(ValueToValueMapTy &VMap,
   return CloningDirector::StopCloningBB;
 }
 
+CloningDirector::CloningAction
+WinEHCatchDirector::handleCompare(ValueToValueMapTy &VMap,
+                                  const CmpInst *Compare, BasicBlock *NewBB) {
+  const IntrinsicInst *IntrinCall = nullptr;
+  if (match(Compare->getOperand(0), m_Intrinsic<Intrinsic::eh_typeid_for>())) {
+    IntrinCall = dyn_cast<IntrinsicInst>(Compare->getOperand(0));
+  } else if (match(Compare->getOperand(1), m_Intrinsic<Intrinsic::eh_typeid_for>())) {
+    IntrinCall = dyn_cast<IntrinsicInst>(Compare->getOperand(1));
+  }
+  if (IntrinCall) {
+    Value *Selector = IntrinCall->getArgOperand(0)->stripPointerCasts();
+    // This causes a replacement that will collapse the landing pad CFG based
+    // on the filter function we intend to match.
+    if (Selector == CurrentSelector->stripPointerCasts()) {
+      VMap[Compare] = ConstantInt::get(SelectorIDType, 1);
+    }
+    else {
+      VMap[Compare] = ConstantInt::get(SelectorIDType, 0);
+    }
+    return CloningDirector::SkipInstruction;
+  }
+  return CloningDirector::CloneInstruction;
+}
+
 CloningDirector::CloningAction WinEHCleanupDirector::handleLandingPad(
     ValueToValueMapTy &VMap, const LandingPadInst *LPad, BasicBlock *NewBB) {
   // The MS runtime will terminate the process if an exception occurs in a
@@ -1180,11 +1223,11 @@ CloningDirector::CloningAction WinEHCleanupDirector::handleLandingPad(
 
 CloningDirector::CloningAction WinEHCleanupDirector::handleBeginCatch(
     ValueToValueMapTy &VMap, const Instruction *Inst, BasicBlock *NewBB) {
-  // Catch blocks within cleanup handlers will always be unreachable.
-  // We'll insert an unreachable instruction now, but it will be pruned
-  // before the cloning process is complete.
-  BasicBlock::InstListType &InstList = NewBB->getInstList();
-  InstList.push_back(new UnreachableInst(NewBB->getContext()));
+  // Cleanup code may flow into catch blocks or the catch block may be part
+  // of a branch that will be optimized away.  We'll insert a return
+  // instruction now, but it may be pruned before the cloning process is
+  // complete.
+  ReturnInst::Create(NewBB->getContext(), nullptr, NewBB);
   return CloningDirector::StopCloningBB;
 }
 
@@ -1248,6 +1291,18 @@ CloningDirector::CloningAction WinEHCleanupDirector::handleResume(
   // Tell the caller to stop processing the current basic block so that
   // the branch instruction will be skipped.
   return CloningDirector::StopCloningBB;
+}
+
+CloningDirector::CloningAction
+WinEHCleanupDirector::handleCompare(ValueToValueMapTy &VMap,
+                                    const CmpInst *Compare, BasicBlock *NewBB) {
+  if (match(Compare->getOperand(0), m_Intrinsic<Intrinsic::eh_typeid_for>()) ||
+      match(Compare->getOperand(1), m_Intrinsic<Intrinsic::eh_typeid_for>())) {
+    VMap[Compare] = ConstantInt::get(SelectorIDType, 1);
+    return CloningDirector::SkipInstruction;
+  }
+  return CloningDirector::CloneInstruction;
+
 }
 
 WinEHFrameVariableMaterializer::WinEHFrameVariableMaterializer(
@@ -1346,9 +1401,20 @@ void WinEHPrepare::mapLandingPadBlocks(LandingPadInst *LPad,
 
     // See if the clause we're looking for is a catch-all.
     // If so, the catch begins immediately.
-    if (isa<ConstantPointerNull>(LPad->getClause(HandlersFound))) {
+    Constant *ExpectedSelector = LPad->getClause(HandlersFound)->stripPointerCasts();
+    if (isa<ConstantPointerNull>(ExpectedSelector)) {
       // The catch all must occur last.
       assert(HandlersFound == NumClauses - 1);
+
+      // There can be additional selector dispatches in the call chain that we
+      // need to ignore.
+      BasicBlock *CatchBlock = nullptr;
+      Constant *Selector;
+      while (BB && isSelectorDispatch(BB, CatchBlock, Selector, NextBB)) {
+        DEBUG(dbgs() << "  Found extra catch dispatch in block "
+          << CatchBlock->getName() << "\n");
+        BB = NextBB;
+      }
 
       // For C++ EH, check if there is any interesting cleanup code before we
       // begin the catch. This is important because cleanups cannot rethrow
@@ -1359,8 +1425,10 @@ void WinEHPrepare::mapLandingPadBlocks(LandingPadInst *LPad,
         findCleanupHandlers(Actions, BB, BB);
 
       // Add the catch handler to the action list.
-      CatchHandler *Action =
-          new CatchHandler(BB, LPad->getClause(HandlersFound), nullptr);
+      // Since this is a catch-all handler, the selector won't actually appear
+      // in the code anywhere.  ExpectedSelector here is the constant null ptr
+      // that we got from the landing pad instruction.
+      CatchHandler *Action = new CatchHandler(BB, ExpectedSelector, nullptr);
       CatchHandlerMap[BB] = Action;
       Actions.insertCatchHandler(Action);
       DEBUG(dbgs() << "  Catch all handler at block " << BB->getName() << "\n");
@@ -1376,12 +1444,21 @@ void WinEHPrepare::mapLandingPadBlocks(LandingPadInst *LPad,
     findCleanupHandlers(Actions, BB, CatchAction->getStartBlock());
 
     assert(CatchAction);
-    ++HandlersFound;
 
-    // Add the catch handler to the action list.
-    Actions.insertCatchHandler(CatchAction);
-    DEBUG(dbgs() << "  Found catch dispatch in block "
-                 << CatchAction->getStartBlock()->getName() << "\n");
+    // When the source program contains multiple nested try blocks the catch
+    // handlers can get strung together in such a way that we can encounter
+    // a dispatch for a selector that we've already had a handler for.
+    if (CatchAction->getSelector()->stripPointerCasts() == ExpectedSelector) {
+      ++HandlersFound;
+
+      // Add the catch handler to the action list.
+      DEBUG(dbgs() << "  Found catch dispatch in block "
+                   << CatchAction->getStartBlock()->getName() << "\n");
+      Actions.insertCatchHandler(CatchAction);
+    } else {
+      DEBUG(dbgs() << "  Found extra catch dispatch in block "
+                   << CatchAction->getStartBlock()->getName() << "\n");
+    }
 
     // Move on to the block after the catch handler.
     BB = NextBB;
@@ -1573,11 +1650,10 @@ void WinEHPrepare::findCleanupHandlers(LandingPadActions &Actions,
       InsertValueInst *Insert1 = nullptr;
       InsertValueInst *Insert2 = nullptr;
       Value *ResumeVal = Resume->getOperand(0);
-      // If there is only one landingpad, we may use the lpad directly with no
-      // insertions.
-      if (isa<LandingPadInst>(ResumeVal))
-        return;
-      if (!isa<PHINode>(ResumeVal)) {
+      // If the resume value isn't a phi or landingpad value, it should be a
+      // series of insertions. Identify them so we can avoid them when scanning
+      // for cleanups.
+      if (!isa<PHINode>(ResumeVal) && !isa<LandingPadInst>(ResumeVal)) {
         Insert2 = dyn_cast<InsertValueInst>(ResumeVal);
         if (!Insert2)
           return createCleanupHandler(Actions, CleanupHandlerMap, BB);
@@ -1693,7 +1769,6 @@ void WinEHPrepare::findCleanupHandlers(LandingPadActions &Actions,
       return;
     BB = Branch->getSuccessor(0);
   }
-  return;
 }
 
 // This is a public function, declared in WinEHFuncInfo.h and is also
