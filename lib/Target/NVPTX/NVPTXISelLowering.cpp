@@ -877,7 +877,7 @@ NVPTXTargetLowering::LowerGlobalAddress(SDValue Op, SelectionDAG &DAG) const {
 
   // We need to consider any offset that comes with the global
   if (GN->getOffset()) {
-    SDValue Offset = DAG.getConstant(GN->getOffset(), getPointerTy());
+    SDValue Offset = DAG.getConstant(GN->getOffset(), dl, getPointerTy());
     Op = DAG.getNode(ISD::ADD, Op, getPointerTy(), Op, Offset);
   }
 
