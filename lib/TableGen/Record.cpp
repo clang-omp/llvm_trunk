@@ -1076,11 +1076,7 @@ static Init *ForeachHelper(Init *LHS, Init *MHS, Init *RHS, RecTy *Type,
       std::vector<Init *> NewOperands;
       std::vector<Init *> NewList(MHSl->begin(), MHSl->end());
 
-      for (std::vector<Init *>::iterator li = NewList.begin(),
-             liend = NewList.end();
-           li != liend;
-           ++li) {
-        Init *Item = *li;
+      for (Init *&Item : NewList) {
         NewOperands.clear();
         for(int i = 0; i < RHSo->getNumOperands(); ++i) {
           // First, replace the foreach variable with the list item
@@ -1095,7 +1091,7 @@ static Init *ForeachHelper(Init *LHS, Init *MHS, Init *RHS, RecTy *Type,
         const OpInit *NewOp = RHSo->clone(NewOperands);
         Init *NewItem = NewOp->Fold(CurRec, CurMultiClass);
         if (NewItem != NewOp)
-          *li = NewItem;
+          Item = NewItem;
       }
       return ListInit::get(NewList, MHSl->getType());
     }
@@ -1118,9 +1114,9 @@ Init *TernOpInit::Fold(Record *CurRec, MultiClass *CurMultiClass) const {
     VarInit *RHSv = dyn_cast<VarInit>(RHS);
     StringInit *RHSs = dyn_cast<StringInit>(RHS);
 
-    if ((LHSd && MHSd && RHSd)
-        || (LHSv && MHSv && RHSv)
-        || (LHSs && MHSs && RHSs)) {
+    if ((LHSd && MHSd && RHSd) ||
+        (LHSv && MHSv && RHSv) ||
+        (LHSs && MHSs && RHSs)) {
       if (RHSd) {
         Record *Val = RHSd->getDef();
         if (LHSd->getAsString() == RHSd->getAsString()) {
@@ -1218,9 +1214,9 @@ std::string TernOpInit::getAsString() const {
   case SUBST: Result = "!subst"; break;
   case FOREACH: Result = "!foreach"; break;
   case IF: Result = "!if"; break;
- }
-  return Result + "(" + LHS->getAsString() + ", " + MHS->getAsString() + ", "
-    + RHS->getAsString() + ")";
+  }
+  return Result + "(" + LHS->getAsString() + ", " + MHS->getAsString() + ", " +
+         RHS->getAsString() + ")";
 }
 
 RecTy *TypedInit::getFieldType(const std::string &FieldName) const {
@@ -1667,14 +1663,13 @@ void Record::resolveReferencesTo(const RecordVal *RV) {
       continue;
     if (Init *V = Values[i].getValue())
       if (Values[i].setValue(V->resolveReferences(*this, RV)))
-        PrintFatalError(getLoc(), "Invalid value is found when setting '"
-                      + Values[i].getNameInitAsString()
-                      + "' after resolving references"
-                      + (RV ? " against '" + RV->getNameInitAsString()
-                              + "' of ("
-                              + RV->getValue()->getAsUnquotedString() + ")"
-                            : "")
-                      + "\n");
+        PrintFatalError(getLoc(), "Invalid value is found when setting '" +
+                        Values[i].getNameInitAsString() +
+                        "' after resolving references" +
+                        (RV ? " against '" + RV->getNameInitAsString() +
+                              "' of (" + RV->getValue()->getAsUnquotedString() +
+                              ")"
+                            : "") + "\n");
   }
   Init *OldName = getNameInit();
   Init *NewName = Name->resolveReferences(*this, RV);
