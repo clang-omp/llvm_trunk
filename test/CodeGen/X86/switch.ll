@@ -367,3 +367,161 @@ return: ret void
 ; CHECK-LABEL: int_max_table_cluster
 ; CHECK: jmpq *.LJTI
 }
+
+
+define void @bt_order_by_weight(i32 %x) {
+entry:
+  switch i32 %x, label %return [
+    i32 0, label %bb0
+    i32 3, label %bb0
+    i32 6, label %bb0
+    i32 1, label %bb1
+    i32 4, label %bb1
+    i32 7, label %bb1
+    i32 2, label %bb2
+    i32 5, label %bb2
+    i32 8, label %bb2
+    i32 9, label %bb2
+  ], !prof !1
+bb0: tail call void @g(i32 0) br label %return
+bb1: tail call void @g(i32 1) br label %return
+bb2: tail call void @g(i32 2) br label %return
+return: ret void
+
+; Cases 1,4,7 have a very large branch weight (which shouldn't overflow), so
+; their bit test should come first. 0,3,6 and 2,5,8,9 both have a weight of 12,
+; but the latter set has more cases, so should be tested for earlier.
+
+; CHECK-LABEL: bt_order_by_weight
+; 146 = 2^1 + 2^4 + 2^7
+; CHECK: movl $146
+; CHECK: btl
+; 292 = 2^2 + 2^5 + 2^8 + 2^9
+; CHECK: movl $804
+; CHECK: btl
+; 73 = 2^0 + 2^3 + 2^6
+; CHECK: movl $73
+; CHECK: btl
+}
+
+!1 = !{!"branch_weights",
+       ; Default:
+       i32 1,
+       ; Cases 0,3,6:
+       i32 4, i32 4, i32 4,
+       ; Cases 1,4,7:
+       i32 4294967295, i32 2, i32 4294967295,
+       ; Cases 2,5,8,9:
+       i32 3, i32 3, i32 3, i32 3}
+
+define void @order_by_weight_and_fallthrough(i32 %x) {
+entry:
+  switch i32 %x, label %return [
+    i32 100, label %bb1
+    i32 200, label %bb0
+    i32 300, label %bb0
+  ], !prof !2
+bb0: tail call void @g(i32 0) br label %return
+bb1: tail call void @g(i32 1) br label %return
+return: ret void
+
+; Case 200 has the highest weight and should come first. 100 and 300 have the
+; same weight, but 300 goes to the 'next' block, so should be last.
+; CHECK-LABEL: order_by_weight_and_fallthrough
+; CHECK: cmpl $200
+; CHECK: cmpl $100
+; CHECK: cmpl $300
+}
+
+!2 = !{!"branch_weights",
+       ; Default:
+       i32 1,
+       ; Case 100:
+       i32 10,
+       ; Case 200:
+       i32 1000,
+       ; Case 300:
+       i32 10}
+
+
+define void @zero_weight_tree(i32 %x) {
+entry:
+  switch i32 %x, label %return [
+    i32 0,  label %bb0
+    i32 10, label %bb1
+    i32 20, label %bb2
+    i32 30, label %bb3
+    i32 40, label %bb4
+    i32 50, label %bb5
+  ], !prof !3
+bb0: tail call void @g(i32 0) br label %return
+bb1: tail call void @g(i32 1) br label %return
+bb2: tail call void @g(i32 2) br label %return
+bb3: tail call void @g(i32 3) br label %return
+bb4: tail call void @g(i32 4) br label %return
+bb5: tail call void @g(i32 5) br label %return
+return: ret void
+
+; Make sure to pick a pivot in the middle also with zero-weight cases.
+; CHECK-LABEL: zero_weight_tree
+; CHECK-NOT: cmpl
+; CHECK: cmpl $29
+}
+
+!3 = !{!"branch_weights", i32 1, i32 10, i32 0, i32 0, i32 0, i32 0, i32 10}
+
+
+define void @left_leaning_weight_balanced_tree(i32 %x) {
+entry:
+  switch i32 %x, label %return [
+    i32 0,  label %bb0
+    i32 10, label %bb1
+    i32 20, label %bb2
+    i32 30, label %bb3
+    i32 40, label %bb4
+    i32 50, label %bb5
+  ], !prof !4
+bb0: tail call void @g(i32 0) br label %return
+bb1: tail call void @g(i32 1) br label %return
+bb2: tail call void @g(i32 2) br label %return
+bb3: tail call void @g(i32 3) br label %return
+bb4: tail call void @g(i32 4) br label %return
+bb5: tail call void @g(i32 5) br label %return
+return: ret void
+
+; To balance the tree by weight, the pivot is shifted to the right, moving hot
+; cases closer to the root.
+; CHECK-LABEL: left_leaning_weight_balanced_tree
+; CHECK-NOT: cmpl
+; CHECK: cmpl $39
+}
+
+!4 = !{!"branch_weights", i32 1, i32 10, i32 1, i32 1, i32 1, i32 10, i32 10}
+
+
+define void @jump_table_affects_balance(i32 %x) {
+entry:
+  switch i32 %x, label %return [
+    ; Jump table:
+    i32 0,  label %bb0
+    i32 1,  label %bb1
+    i32 2,  label %bb2
+    i32 3,  label %bb3
+
+    i32 100, label %bb0
+    i32 200, label %bb1
+    i32 300, label %bb2
+  ]
+bb0: tail call void @g(i32 0) br label %return
+bb1: tail call void @g(i32 1) br label %return
+bb2: tail call void @g(i32 2) br label %return
+bb3: tail call void @g(i32 3) br label %return
+return: ret void
+
+; CHECK-LABEL: jump_table_affects_balance
+; If the tree were balanced based on number of clusters, {0-3,100} would go on
+; the left and {200,300} on the right. However, the jump table weights as much
+; as its components, so 100 is selected as the pivot.
+; CHECK-NOT: cmpl
+; CHECK: cmpl $99
+}
