@@ -129,6 +129,18 @@ TEST(TripleTest, ParsedIDs) {
   EXPECT_EQ(Triple::UnknownOS, T.getOS());
   EXPECT_EQ(Triple::EABI, T.getEnvironment());
 
+  T = Triple("armv6hl-none-linux-gnueabi");
+  EXPECT_EQ(Triple::arm, T.getArch());
+  EXPECT_EQ(Triple::Linux, T.getOS());
+  EXPECT_EQ(Triple::UnknownVendor, T.getVendor());
+  EXPECT_EQ(Triple::GNUEABI, T.getEnvironment());
+
+  T = Triple("armv7hl-none-linux-gnueabi");
+  EXPECT_EQ(Triple::arm, T.getArch());
+  EXPECT_EQ(Triple::Linux, T.getOS());
+  EXPECT_EQ(Triple::UnknownVendor, T.getVendor());
+  EXPECT_EQ(Triple::GNUEABI, T.getEnvironment());
+
   T = Triple("amdil-unknown-unknown");
   EXPECT_EQ(Triple::amdil, T.getArch());
   EXPECT_EQ(Triple::UnknownVendor, T.getVendor());
@@ -694,7 +706,6 @@ TEST(TripleTest, getARMCPUForArch) {
     EXPECT_STREQ("cortex-a8", Triple.getARMCPUForArch("arm"));
   }
 }
-}
 
 TEST(TripleTest, NormalizeARM) {
   EXPECT_EQ("armv6--netbsd-eabi", Triple::normalize("armv6-netbsd-eabi"));
@@ -712,3 +723,5 @@ TEST(TripleTest, NormalizeARM) {
   T = Triple("armv6eb--netbsd-eabi");
   EXPECT_EQ(Triple::armeb, T.getArch());
 }
+
+} // end anonymous namespace

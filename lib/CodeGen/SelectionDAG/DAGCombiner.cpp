@@ -1452,12 +1452,9 @@ SDValue DAGCombiner::combine(SDNode *N) {
     if (isa<ConstantSDNode>(N0) || !isa<ConstantSDNode>(N1)) {
       SDValue Ops[] = {N1, N0};
       SDNode *CSENode;
-      if (const BinaryWithFlagsSDNode *BinNode =
-              dyn_cast<BinaryWithFlagsSDNode>(N)) {
-        CSENode = DAG.getNodeIfExists(N->getOpcode(), N->getVTList(), Ops,
-                                      BinNode->Flags.hasNoUnsignedWrap(),
-                                      BinNode->Flags.hasNoSignedWrap(),
-                                      BinNode->Flags.hasExact());
+      if (auto *FlagsNode = dyn_cast<SDNodeWithFlags>(N)) {
+        CSENode = DAG.getNodeIfExists(N->getOpcode(), N->getVTList(),
+                                      Ops, &FlagsNode->Flags);
       } else {
         CSENode = DAG.getNodeIfExists(N->getOpcode(), N->getVTList(), Ops);
       }
@@ -8549,11 +8546,10 @@ static SDValue FoldIntToFPToInt(SDNode *N, SelectionDAG &DAG) {
 
 SDValue DAGCombiner::visitFP_TO_SINT(SDNode *N) {
   SDValue N0 = N->getOperand(0);
-  ConstantFPSDNode *N0CFP = dyn_cast<ConstantFPSDNode>(N0);
   EVT VT = N->getValueType(0);
 
   // fold (fp_to_sint c1fp) -> c1
-  if (N0CFP)
+  if (isConstantFPBuildVectorOrConstantFP(N0))
     return DAG.getNode(ISD::FP_TO_SINT, SDLoc(N), VT, N0);
 
   return FoldIntToFPToInt(N, DAG);
@@ -8561,11 +8557,10 @@ SDValue DAGCombiner::visitFP_TO_SINT(SDNode *N) {
 
 SDValue DAGCombiner::visitFP_TO_UINT(SDNode *N) {
   SDValue N0 = N->getOperand(0);
-  ConstantFPSDNode *N0CFP = dyn_cast<ConstantFPSDNode>(N0);
   EVT VT = N->getValueType(0);
 
   // fold (fp_to_uint c1fp) -> c1
-  if (N0CFP)
+  if (isConstantFPBuildVectorOrConstantFP(N0))
     return DAG.getNode(ISD::FP_TO_UINT, SDLoc(N), VT, N0);
 
   return FoldIntToFPToInt(N, DAG);
@@ -11415,19 +11410,13 @@ SDValue DAGCombiner::ReplaceExtractVectorEltOfLoadWithNarrowedLoad(
   if (auto *ConstEltNo = dyn_cast<ConstantSDNode>(EltNo)) {
     int Elt = ConstEltNo->getZExtValue();
     unsigned PtrOff = VecEltVT.getSizeInBits() * Elt / 8;
-    if (TLI.isBigEndian())
-      PtrOff = InVecVT.getSizeInBits() / 8 - PtrOff;
     Offset = DAG.getConstant(PtrOff, DL, PtrType);
     MPI = OriginalLoad->getPointerInfo().getWithOffset(PtrOff);
   } else {
+    Offset = DAG.getZExtOrTrunc(EltNo, DL, PtrType);
     Offset = DAG.getNode(
-        ISD::MUL, DL, EltNo.getValueType(), EltNo,
-        DAG.getConstant(VecEltVT.getStoreSize(), DL, EltNo.getValueType()));
-    if (TLI.isBigEndian())
-      Offset = DAG.getNode(
-          ISD::SUB, DL, EltNo.getValueType(),
-          DAG.getConstant(InVecVT.getStoreSize(), DL, EltNo.getValueType()),
-          Offset);
+        ISD::MUL, DL, PtrType, Offset,
+        DAG.getConstant(VecEltVT.getStoreSize(), DL, PtrType));
     MPI = OriginalLoad->getPointerInfo();
   }
   NewPtr = DAG.getNode(ISD::ADD, DL, PtrType, NewPtr, Offset);
