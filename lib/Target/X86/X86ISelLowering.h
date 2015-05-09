@@ -26,7 +26,7 @@ namespace llvm {
 
   namespace X86ISD {
     // X86 Specific DAG Nodes
-    enum NodeType {
+    enum NodeType : unsigned {
       // Start the numbering where the builtin ops leave off.
       FIRST_NUMBER = ISD::BUILTIN_OP_END,
 
@@ -308,6 +308,8 @@ namespace llvm {
       /// integer signed and unsigned data types.
       CMPM,
       CMPMU,
+      // Vector comparison with rounding mode for FP values
+      CMPM_RND,
 
       // Arithmetic operations with FLAGS results.
       ADD, SUB, ADC, SBB, SMUL,
@@ -967,6 +969,8 @@ namespace llvm {
     SDValue LowerINIT_TRAMPOLINE(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerFLT_ROUNDS_(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerWin64_i128OP(SDValue Op, SelectionDAG &DAG) const;
+    SDValue LowerGC_TRANSITION_START(SDValue Op, SelectionDAG &DAG) const;
+    SDValue LowerGC_TRANSITION_END(SDValue Op, SelectionDAG &DAG) const;
 
     SDValue
       LowerFormalArguments(SDValue Chain,

@@ -955,18 +955,18 @@ void SelectionDAGBuilder::resolveDanglingDebugInfo(const Value *V,
 /// emit CopyFromReg of the specified type Ty. Return empty SDValue() otherwise.
 SDValue SelectionDAGBuilder::getCopyFromRegs(const Value *V, Type *Ty) {
   DenseMap<const Value *, unsigned>::iterator It = FuncInfo.ValueMap.find(V);
-  SDValue res;
+  SDValue Result;
 
   if (It != FuncInfo.ValueMap.end()) {
     unsigned InReg = It->second;
     RegsForValue RFV(*DAG.getContext(), DAG.getTargetLoweringInfo(), InReg,
                      Ty);
     SDValue Chain = DAG.getEntryNode();
-    res = RFV.getCopyFromRegs(DAG, FuncInfo, getCurSDLoc(), Chain, nullptr, V);
-    resolveDanglingDebugInfo(V, res);
+    Result = RFV.getCopyFromRegs(DAG, FuncInfo, getCurSDLoc(), Chain, nullptr, V);
+    resolveDanglingDebugInfo(V, Result);
   }
 
-  return res;
+  return Result;
 }
 
 /// getValue - Return an SDValue for the given Value.
@@ -7927,17 +7927,15 @@ void SelectionDAGBuilder::splitWorkItem(SwitchWorkList &WorkList,
 
   // Move LastLeft and FirstRight towards each other from opposite directions to
   // find a partitioning of the clusters which balances the weight on both
-  // sides.
+  // sides. If LeftWeight and RightWeight are equal, alternate which side is
+  // taken to ensure 0-weight nodes are distributed evenly.
+  unsigned I = 0;
   while (LastLeft + 1 < FirstRight) {
-    // Zero-weight nodes would cause skewed trees since they don't affect
-    // LeftWeight or RightWeight.
-    assert(LastLeft->Weight != 0);
-    assert(FirstRight->Weight != 0);
-
-    if (LeftWeight < RightWeight)
+    if (LeftWeight < RightWeight || (LeftWeight == RightWeight && (I & 1)))
       LeftWeight += (++LastLeft)->Weight;
     else
       RightWeight += (--FirstRight)->Weight;
+    I++;
   }
   assert(LastLeft + 1 == FirstRight);
   assert(LastLeft >= W.FirstCluster);
@@ -8007,20 +8005,19 @@ void SelectionDAGBuilder::visitSwitch(const SwitchInst &SI) {
   for (auto I : SI.cases()) {
     MachineBasicBlock *Succ = FuncInfo.MBBMap[I.getCaseSuccessor()];
     const ConstantInt *CaseVal = I.getCaseValue();
-    uint32_t Weight = 1;
-    if (BPI) {
-      Weight = BPI->getEdgeWeight(SI.getParent(), I.getSuccessorIndex());
-      assert(Weight <= UINT32_MAX / SI.getNumSuccessors());
-    }
+    uint32_t Weight =
+        BPI ? BPI->getEdgeWeight(SI.getParent(), I.getSuccessorIndex()) : 0;
     Clusters.push_back(CaseCluster::range(CaseVal, CaseVal, Succ, Weight));
   }
 
   MachineBasicBlock *DefaultMBB = FuncInfo.MBBMap[SI.getDefaultDest()];
 
-  if (TM.getOptLevel() != CodeGenOpt::None) {
-    // Cluster adjacent cases with the same destination.
-    sortAndRangeify(Clusters);
+  // Cluster adjacent cases with the same destination. We do this at all
+  // optimization levels because it's cheap to do and will make codegen faster
+  // if there are many clusters.
+  sortAndRangeify(Clusters);
 
+  if (TM.getOptLevel() != CodeGenOpt::None) {
     // Replace an unreachable default with the most popular destination.
     // FIXME: Exploit unreachable default more aggressively.
     bool UnreachableDefault =
