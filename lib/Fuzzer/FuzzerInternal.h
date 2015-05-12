@@ -44,6 +44,8 @@ std::string Hash(const Unit &U);
 void SetTimer(int Seconds);
 void PrintFileAsBase64(const std::string &Path);
 
+int NumberOfCpuCores();
+
 class Fuzzer {
  public:
   struct FuzzingOptions {
@@ -53,9 +55,9 @@ class Fuzzer {
     int  MutateDepth = 5;
     bool ExitOnFirst = false;
     bool UseCounters = false;
+    bool UseTraces = false;
     bool UseFullCoverageSet  = false;
     bool UseCoveragePairs = false;
-    bool UseDFSan = false;
     bool Reload = true;
     int PreferSmallDuringInitialShuffle = -1;
     size_t MaxNumberOfRuns = ULONG_MAX;
@@ -66,7 +68,7 @@ class Fuzzer {
   void AddToCorpus(const Unit &U) { Corpus.push_back(U); }
   void Loop(size_t NumIterations);
   void ShuffleAndMinimize();
-  void InitializeDFSan();
+  void InitializeTraceState();
   size_t CorpusSize() const { return Corpus.size(); }
   void ReadDir(const std::string &Path, long *Epoch) {
     ReadDirToVectorOfUnits(Path.c_str(), &Corpus, Epoch);

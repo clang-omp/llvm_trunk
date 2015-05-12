@@ -1017,6 +1017,11 @@ static bool isBinOpWithFlags(unsigned Opcode) {
   case ISD::ADD:
   case ISD::SUB:
   case ISD::SHL:
+  case ISD::FADD:
+  case ISD::FDIV:
+  case ISD::FMUL:
+  case ISD::FREM:
+  case ISD::FSUB:
     return true;
   default:
     return false;
@@ -1029,8 +1034,8 @@ class BinaryWithFlagsSDNode : public BinarySDNode {
 public:
   SDNodeFlags Flags;
   BinaryWithFlagsSDNode(unsigned Opc, unsigned Order, DebugLoc dl, SDVTList VTs,
-                        SDValue X, SDValue Y)
-      : BinarySDNode(Opc, Order, dl, VTs, X, Y), Flags() {}
+                        SDValue X, SDValue Y, const SDNodeFlags &NodeFlags)
+      : BinarySDNode(Opc, Order, dl, VTs, X, Y), Flags(NodeFlags) {}
   static bool classof(const SDNode *N) {
     return isBinOpWithFlags(N->getOpcode());
   }
@@ -1081,7 +1086,7 @@ public:
   }
 };
 
-/// Abstact virtual class for operations for memory operations
+/// This is an abstract virtual class for memory operations.
 class MemSDNode : public SDNode {
 private:
   // VT of in-memory value.
@@ -1198,7 +1203,7 @@ public:
   }
 };
 
-/// A SDNode reprenting atomic operations.
+/// This is an SDNode representing atomic operations.
 class AtomicSDNode : public MemSDNode {
   SDUse Ops[4];
 

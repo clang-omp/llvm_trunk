@@ -248,9 +248,14 @@ static void analyzeParsePointLiveness(
   result.liveset = liveset;
 }
 
-/// If we can trivially determine that this vector contains only base pointers,
-/// return the base instruction.
-static Value *findBaseOfVector(Value *I) {
+static Value *findBaseDefiningValue(Value *I);
+
+/// If we can trivially determine that the index specified in the given vector
+/// is a base pointer, return it.  In cases where the entire vector is known to
+/// consist of base pointers, the entire vector will be returned.  This
+/// indicates that the relevant extractelement is a valid base pointer and
+/// should be used directly.
+static Value *findBaseOfVector(Value *I, Value *Index) {
   assert(I->getType()->isVectorTy() &&
          cast<VectorType>(I->getType())->getElementType()->isPointerTy() &&
          "Illegal to ask for the base pointer of a non-pointer type");
@@ -285,6 +290,20 @@ static Value *findBaseOfVector(Value *I) {
   if (isa<LoadInst>(I))
     return I;
 
+  // For an insert element, we might be able to look through it if we know
+  // something about the indexes, but if the indices are arbitrary values, we
+  // can't without much more extensive scalarization. 
+  if (InsertElementInst *IEI = dyn_cast<InsertElementInst>(I)) {
+    Value *InsertIndex = IEI->getOperand(2);
+    // This index is inserting the value, look for it's base
+    if (InsertIndex == Index)
+      return findBaseDefiningValue(IEI->getOperand(1));
+    // Both constant, and can't be equal per above. This insert is definitely
+    // not relevant, look back at the rest of the vector and keep trying.  
+    if (isa<ConstantInt>(Index) && isa<ConstantInt>(InsertIndex))
+      return findBaseOfVector(IEI->getOperand(0), Index);
+  }
+  
   // Note: This code is currently rather incomplete.  We are essentially only
   // handling cases where the vector element is trivially a base pointer.  We
   // need to update the entire base pointer construction algorithm to know how
@@ -301,14 +320,22 @@ static Value *findBaseDefiningValue(Value *I) {
          "Illegal to ask for the base pointer of a non-pointer type");
 
   // This case is a bit of a hack - it only handles extracts from vectors which
-  // trivially contain only base pointers.  See note inside the function for
-  // how to improve this.
+  // trivially contain only base pointers or cases where we can directly match
+  // the index of the original extract element to an insertion into the vector.
+  // See note inside the function for how to improve this.
   if (auto *EEI = dyn_cast<ExtractElementInst>(I)) {
     Value *VectorOperand = EEI->getVectorOperand();
-    Value *VectorBase = findBaseOfVector(VectorOperand);
-    (void)VectorBase;
-    assert(VectorBase && "extract element not known to be a trivial base");
-    return EEI;
+    Value *Index = EEI->getIndexOperand();
+    Value *VectorBase = findBaseOfVector(VectorOperand, Index);
+    // If the result returned is a vector, we know the entire vector must
+    // contain base pointers.  In that case, the extractelement is a valid base
+    // for this value.
+    if (VectorBase->getType()->isVectorTy())
+      return EEI;
+    // Otherwise, we needed to look through the vector to find the base for
+    // this particular element.
+    assert(VectorBase->getType()->isPointerTy());
+    return VectorBase;
   }
 
   if (isa<Argument>(I))
@@ -1059,46 +1086,49 @@ static AttributeSet legalizeCallAttributes(AttributeSet AS) {
 ///   statepointToken - statepoint instruction to which relocates should be
 ///   bound.
 ///   Builder - Llvm IR builder to be used to construct new calls.
-static void CreateGCRelocates(ArrayRef<llvm::Value *> liveVariables,
-                              const int liveStart,
-                              ArrayRef<llvm::Value *> basePtrs,
-                              Instruction *statepointToken,
+static void CreateGCRelocates(ArrayRef<llvm::Value *> LiveVariables,
+                              const int LiveStart,
+                              ArrayRef<llvm::Value *> BasePtrs,
+                              Instruction *StatepointToken,
                               IRBuilder<> Builder) {
   SmallVector<Instruction *, 64> NewDefs;
-  NewDefs.reserve(liveVariables.size());
+  NewDefs.reserve(LiveVariables.size());
 
-  Module *M = statepointToken->getParent()->getParent()->getParent();
+  Module *M = StatepointToken->getParent()->getParent()->getParent();
 
-  for (unsigned i = 0; i < liveVariables.size(); i++) {
+  for (unsigned i = 0; i < LiveVariables.size(); i++) {
     // We generate a (potentially) unique declaration for every pointer type
     // combination.  This results is some blow up the function declarations in
     // the IR, but removes the need for argument bitcasts which shrinks the IR
     // greatly and makes it much more readable.
-    SmallVector<Type *, 1> types;                 // one per 'any' type
-    types.push_back(liveVariables[i]->getType()); // result type
-    Value *gc_relocate_decl = Intrinsic::getDeclaration(
-        M, Intrinsic::experimental_gc_relocate, types);
+    SmallVector<Type *, 1> Types;                 // one per 'any' type
+    // All gc_relocate are set to i8 addrspace(1)* type. This could help avoid
+    // cases where the actual value's type mangling is not supported by llvm. A
+    // bitcast is added later to convert gc_relocate to the actual value's type.
+    Types.push_back(Type::getInt8PtrTy(M->getContext(), 1));
+    Value *GCRelocateDecl = Intrinsic::getDeclaration(
+        M, Intrinsic::experimental_gc_relocate, Types);
 
     // Generate the gc.relocate call and save the result
-    Value *baseIdx =
+    Value *BaseIdx =
         ConstantInt::get(Type::getInt32Ty(M->getContext()),
-                         liveStart + find_index(liveVariables, basePtrs[i]));
-    Value *liveIdx = ConstantInt::get(
+                         LiveStart + find_index(LiveVariables, BasePtrs[i]));
+    Value *LiveIdx = ConstantInt::get(
         Type::getInt32Ty(M->getContext()),
-        liveStart + find_index(liveVariables, liveVariables[i]));
+        LiveStart + find_index(LiveVariables, LiveVariables[i]));
 
     // only specify a debug name if we can give a useful one
-    Value *reloc = Builder.CreateCall3(
-        gc_relocate_decl, statepointToken, baseIdx, liveIdx,
-        liveVariables[i]->hasName() ? liveVariables[i]->getName() + ".relocated"
+    Value *Reloc = Builder.CreateCall3(
+        GCRelocateDecl, StatepointToken, BaseIdx, LiveIdx,
+        LiveVariables[i]->hasName() ? LiveVariables[i]->getName() + ".relocated"
                                     : "");
     // Trick CodeGen into thinking there are lots of free registers at this
     // fake call.
-    cast<CallInst>(reloc)->setCallingConv(CallingConv::Cold);
+    cast<CallInst>(Reloc)->setCallingConv(CallingConv::Cold);
 
-    NewDefs.push_back(cast<Instruction>(reloc));
+    NewDefs.push_back(cast<Instruction>(Reloc));
   }
-  assert(NewDefs.size() == liveVariables.size() &&
+  assert(NewDefs.size() == LiveVariables.size() &&
          "missing or extra redefinition at safepoint");
 }
 
@@ -1319,34 +1349,42 @@ makeStatepointExplicit(DominatorTree &DT, const CallSite &CS, Pass *P,
 // Add visited values into the visitedLiveValues set we will later use them
 // for sanity check.
 static void
-insertRelocationStores(iterator_range<Value::user_iterator> gcRelocs,
-                       DenseMap<Value *, Value *> &allocaMap,
-                       DenseSet<Value *> &visitedLiveValues) {
+insertRelocationStores(iterator_range<Value::user_iterator> GCRelocs,
+                       DenseMap<Value *, Value *> &AllocaMap,
+                       DenseSet<Value *> &VisitedLiveValues) {
 
-  for (User *U : gcRelocs) {
+  for (User *U : GCRelocs) {
     if (!isa<IntrinsicInst>(U))
       continue;
 
-    IntrinsicInst *relocatedValue = cast<IntrinsicInst>(U);
+    IntrinsicInst *RelocatedValue = cast<IntrinsicInst>(U);
 
     // We only care about relocates
-    if (relocatedValue->getIntrinsicID() !=
+    if (RelocatedValue->getIntrinsicID() !=
         Intrinsic::experimental_gc_relocate) {
       continue;
     }
 
-    GCRelocateOperands relocateOperands(relocatedValue);
-    Value *originalValue =
-        const_cast<Value *>(relocateOperands.getDerivedPtr());
-    assert(allocaMap.count(originalValue));
-    Value *alloca = allocaMap[originalValue];
+    GCRelocateOperands RelocateOperands(RelocatedValue);
+    Value *OriginalValue =
+        const_cast<Value *>(RelocateOperands.getDerivedPtr());
+    assert(AllocaMap.count(OriginalValue));
+    Value *Alloca = AllocaMap[OriginalValue];
 
     // Emit store into the related alloca
-    StoreInst *store = new StoreInst(relocatedValue, alloca);
-    store->insertAfter(relocatedValue);
+    // All gc_relocate are i8 addrspace(1)* typed, and it must be bitcasted to
+    // the correct type according to alloca.
+    assert(RelocatedValue->getNextNode() && "Should always have one since it's not a terminator");
+    IRBuilder<> Builder(RelocatedValue->getNextNode());
+    Value *CastedRelocatedValue =
+        Builder.CreateBitCast(RelocatedValue, cast<AllocaInst>(Alloca)->getAllocatedType(),
+        RelocatedValue->hasName() ? RelocatedValue->getName() + ".casted" : "");
+
+    StoreInst *Store = new StoreInst(CastedRelocatedValue, Alloca);
+    Store->insertAfter(cast<Instruction>(CastedRelocatedValue));
 
 #ifndef NDEBUG
-    visitedLiveValues.insert(originalValue);
+    VisitedLiveValues.insert(OriginalValue);
 #endif
   }
 }

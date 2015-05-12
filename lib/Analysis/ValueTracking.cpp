@@ -1429,15 +1429,15 @@ void computeKnownBits(Value *V, APInt &KnownZero, APInt &KnownOne,
 
       KnownZero = APInt::getAllOnesValue(BitWidth);
       KnownOne = APInt::getAllOnesValue(BitWidth);
-      for (unsigned i = 0, e = P->getNumIncomingValues(); i != e; ++i) {
+      for (Value *IncValue : P->incoming_values()) {
         // Skip direct self references.
-        if (P->getIncomingValue(i) == P) continue;
+        if (IncValue == P) continue;
 
         KnownZero2 = APInt(BitWidth, 0);
         KnownOne2 = APInt(BitWidth, 0);
         // Recurse, but cap the recursion to one level, because we don't
         // want to waste time spinning around in loops.
-        computeKnownBits(P->getIncomingValue(i), KnownZero2, KnownOne2, DL,
+        computeKnownBits(IncValue, KnownZero2, KnownOne2, DL,
                          MaxDepth - 1, Q);
         KnownZero &= KnownZero2;
         KnownOne &= KnownOne2;
@@ -2691,8 +2691,8 @@ static uint64_t GetStringLengthH(Value *V, SmallPtrSetImpl<PHINode*> &PHIs) {
 
     // If it was new, see if all the input strings are the same length.
     uint64_t LenSoFar = ~0ULL;
-    for (unsigned i = 0, e = PN->getNumIncomingValues(); i != e; ++i) {
-      uint64_t Len = GetStringLengthH(PN->getIncomingValue(i), PHIs);
+    for (Value *IncValue : PN->incoming_values()) {
+      uint64_t Len = GetStringLengthH(IncValue, PHIs);
       if (Len == 0) return 0; // Unknown length -> unknown.
 
       if (Len == ~0ULL) continue;
@@ -2826,8 +2826,8 @@ void llvm::GetUnderlyingObjects(Value *V, SmallVectorImpl<Value *> &Objects,
       // underlying objects.
       if (!LI || !LI->isLoopHeader(PN->getParent()) ||
           isSameUnderlyingObjectInLoop(PN, LI))
-        for (unsigned i = 0, e = PN->getNumIncomingValues(); i != e; ++i)
-          Worklist.push_back(PN->getIncomingValue(i));
+        for (Value *IncValue : PN->incoming_values())
+          Worklist.push_back(IncValue);
       continue;
     }
 
@@ -3203,4 +3203,85 @@ OverflowResult llvm::computeOverflowForUnsignedAdd(Value *LHS, Value *RHS,
   }
 
   return OverflowResult::MayOverflow;
+}
+
+SelectPatternFlavor llvm::matchSelectPattern(Value *V,
+                                             Value *&LHS, Value *&RHS) {
+  SelectInst *SI = dyn_cast<SelectInst>(V);
+  if (!SI) return SPF_UNKNOWN;
+
+  ICmpInst *ICI = dyn_cast<ICmpInst>(SI->getCondition());
+  if (!ICI) return SPF_UNKNOWN;
+
+  ICmpInst::Predicate Pred = ICI->getPredicate();
+  Value *CmpLHS = ICI->getOperand(0);
+  Value *CmpRHS = ICI->getOperand(1);
+  Value *TrueVal = SI->getTrueValue();
+  Value *FalseVal = SI->getFalseValue();
+
+  LHS = CmpLHS;
+  RHS = CmpRHS;
+
+  // (icmp X, Y) ? X : Y
+  if (TrueVal == CmpLHS && FalseVal == CmpRHS) {
+    switch (Pred) {
+    default: return SPF_UNKNOWN; // Equality.
+    case ICmpInst::ICMP_UGT:
+    case ICmpInst::ICMP_UGE: return SPF_UMAX;
+    case ICmpInst::ICMP_SGT:
+    case ICmpInst::ICMP_SGE: return SPF_SMAX;
+    case ICmpInst::ICMP_ULT:
+    case ICmpInst::ICMP_ULE: return SPF_UMIN;
+    case ICmpInst::ICMP_SLT:
+    case ICmpInst::ICMP_SLE: return SPF_SMIN;
+    }
+  }
+
+  // (icmp X, Y) ? Y : X
+  if (TrueVal == CmpRHS && FalseVal == CmpLHS) {
+    switch (Pred) {
+    default: return SPF_UNKNOWN; // Equality.
+    case ICmpInst::ICMP_UGT:
+    case ICmpInst::ICMP_UGE: return SPF_UMIN;
+    case ICmpInst::ICMP_SGT:
+    case ICmpInst::ICMP_SGE: return SPF_SMIN;
+    case ICmpInst::ICMP_ULT:
+    case ICmpInst::ICMP_ULE: return SPF_UMAX;
+    case ICmpInst::ICMP_SLT:
+    case ICmpInst::ICMP_SLE: return SPF_SMAX;
+    }
+  }
+
+  if (ConstantInt *C1 = dyn_cast<ConstantInt>(CmpRHS)) {
+    if ((CmpLHS == TrueVal && match(FalseVal, m_Neg(m_Specific(CmpLHS)))) ||
+        (CmpLHS == FalseVal && match(TrueVal, m_Neg(m_Specific(CmpLHS))))) {
+
+      // ABS(X) ==> (X >s 0) ? X : -X and (X >s -1) ? X : -X
+      // NABS(X) ==> (X >s 0) ? -X : X and (X >s -1) ? -X : X
+      if (Pred == ICmpInst::ICMP_SGT && (C1->isZero() || C1->isMinusOne())) {
+        return (CmpLHS == TrueVal) ? SPF_ABS : SPF_NABS;
+      }
+
+      // ABS(X) ==> (X <s 0) ? -X : X and (X <s 1) ? -X : X
+      // NABS(X) ==> (X <s 0) ? X : -X and (X <s 1) ? X : -X
+      if (Pred == ICmpInst::ICMP_SLT && (C1->isZero() || C1->isOne())) {
+        return (CmpLHS == FalseVal) ? SPF_ABS : SPF_NABS;
+      }
+    }
+    
+    // Y >s C ? ~Y : ~C == ~Y <s ~C ? ~Y : ~C = SMIN(~Y, ~C)
+    if (const auto *C2 = dyn_cast<ConstantInt>(FalseVal)) {
+      if (C1->getType() == C2->getType() && ~C1->getValue() == C2->getValue() &&
+          (match(TrueVal, m_Not(m_Specific(CmpLHS))) ||
+           match(CmpLHS, m_Not(m_Specific(TrueVal))))) {
+        LHS = TrueVal;
+        RHS = FalseVal;
+        return SPF_SMIN;
+      }
+    }
+  }
+
+  // TODO: (X > 4) ? X : 5   -->  (X >= 5) ? X : 5  -->  MAX(X, 5)
+
+  return SPF_UNKNOWN;
 }
