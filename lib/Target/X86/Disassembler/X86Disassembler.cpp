@@ -80,19 +80,20 @@ X86GenericDisassembler::X86GenericDisassembler(
                                          MCContext &Ctx,
                                          std::unique_ptr<const MCInstrInfo> MII)
   : MCDisassembler(STI, Ctx), MII(std::move(MII)) {
-  const FeatureBitset &FB = STI.getFeatureBits();
-  if (FB[X86::Mode16Bit]) {
+  switch (STI.getFeatureBits() &
+          (X86::Mode16Bit | X86::Mode32Bit | X86::Mode64Bit)) {
+  case X86::Mode16Bit:
     fMode = MODE_16BIT;
-    return;
-  } else if (FB[X86::Mode32Bit]) {
+    break;
+  case X86::Mode32Bit:
     fMode = MODE_32BIT;
-    return;
-  } else if (FB[X86::Mode64Bit]) {
+    break;
+  case X86::Mode64Bit:
     fMode = MODE_64BIT;
-    return;
+    break;
+  default:
+    llvm_unreachable("Invalid CPU mode");
   }
-
-  llvm_unreachable("Invalid CPU mode");
 }
 
 struct Region {
@@ -179,7 +180,7 @@ static void translateRegister(MCInst &mcInst, Reg reg) {
 #undef ENTRY
 
   uint8_t llvmRegnum = llvmRegnums[reg];
-  mcInst.addOperand(MCOperand::CreateReg(llvmRegnum));
+  mcInst.addOperand(MCOperand::createReg(llvmRegnum));
 }
 
 /// tryAddingSymbolicOperand - trys to add a symbolic operand in place of the
@@ -247,11 +248,11 @@ static bool translateSrcIndex(MCInst &mcInst, InternalInstruction &insn) {
     assert(insn.mode == MODE_16BIT);
     baseRegNo = insn.prefixPresent[0x67] ? X86::ESI : X86::SI;
   }
-  MCOperand baseReg = MCOperand::CreateReg(baseRegNo);
+  MCOperand baseReg = MCOperand::createReg(baseRegNo);
   mcInst.addOperand(baseReg);
 
   MCOperand segmentReg;
-  segmentReg = MCOperand::CreateReg(segmentRegnums[insn.segmentOverride]);
+  segmentReg = MCOperand::createReg(segmentRegnums[insn.segmentOverride]);
   mcInst.addOperand(segmentReg);
   return false;
 }
@@ -272,7 +273,7 @@ static bool translateDstIndex(MCInst &mcInst, InternalInstruction &insn) {
     assert(insn.mode == MODE_16BIT);
     baseRegNo = insn.prefixPresent[0x67] ? X86::EDI : X86::DI;
   }
-  MCOperand baseReg = MCOperand::CreateReg(baseRegNo);
+  MCOperand baseReg = MCOperand::createReg(baseRegNo);
   mcInst.addOperand(baseReg);
   return false;
 }
@@ -538,13 +539,13 @@ static void translateImmediate(MCInst &mcInst, uint64_t immediate,
   case TYPE_XMM32:
   case TYPE_XMM64:
   case TYPE_XMM128:
-    mcInst.addOperand(MCOperand::CreateReg(X86::XMM0 + (immediate >> 4)));
+    mcInst.addOperand(MCOperand::createReg(X86::XMM0 + (immediate >> 4)));
     return;
   case TYPE_XMM256:
-    mcInst.addOperand(MCOperand::CreateReg(X86::YMM0 + (immediate >> 4)));
+    mcInst.addOperand(MCOperand::createReg(X86::YMM0 + (immediate >> 4)));
     return;
   case TYPE_XMM512:
-    mcInst.addOperand(MCOperand::CreateReg(X86::ZMM0 + (immediate >> 4)));
+    mcInst.addOperand(MCOperand::createReg(X86::ZMM0 + (immediate >> 4)));
     return;
   case TYPE_REL8:
     isBranch = true;
@@ -567,12 +568,12 @@ static void translateImmediate(MCInst &mcInst, uint64_t immediate,
   if(!tryAddingSymbolicOperand(immediate + pcrel, isBranch, insn.startLocation,
                                insn.immediateOffset, insn.immediateSize,
                                mcInst, Dis))
-    mcInst.addOperand(MCOperand::CreateImm(immediate));
+    mcInst.addOperand(MCOperand::createImm(immediate));
 
   if (type == TYPE_MOFFS8 || type == TYPE_MOFFS16 ||
       type == TYPE_MOFFS32 || type == TYPE_MOFFS64) {
     MCOperand segmentReg;
-    segmentReg = MCOperand::CreateReg(segmentRegnums[insn.segmentOverride]);
+    segmentReg = MCOperand::createReg(segmentRegnums[insn.segmentOverride]);
     mcInst.addOperand(segmentReg);
   }
 }
@@ -605,7 +606,7 @@ static bool translateRMRegister(MCInst &mcInst,
     return true;
 #define ENTRY(x)                                                      \
   case EA_REG_##x:                                                    \
-    mcInst.addOperand(MCOperand::CreateReg(X86::x)); break;
+    mcInst.addOperand(MCOperand::createReg(X86::x)); break;
   ALL_REGS
 #undef ENTRY
   }
@@ -650,12 +651,12 @@ static bool translateRMMemory(MCInst &mcInst, InternalInstruction &insn,
         return true;
 #define ENTRY(x)                                          \
       case SIB_BASE_##x:                                  \
-        baseReg = MCOperand::CreateReg(X86::x); break;
+        baseReg = MCOperand::createReg(X86::x); break;
       ALL_SIB_BASES
 #undef ENTRY
       }
     } else {
-      baseReg = MCOperand::CreateReg(0);
+      baseReg = MCOperand::createReg(0);
     }
 
     // Check whether we are handling VSIB addressing mode for GATHER.
@@ -705,7 +706,7 @@ static bool translateRMMemory(MCInst &mcInst, InternalInstruction &insn,
         return true;
 #define ENTRY(x)                                          \
       case SIB_INDEX_##x:                                 \
-        indexReg = MCOperand::CreateReg(X86::x); break;
+        indexReg = MCOperand::createReg(X86::x); break;
       EA_BASES_32BIT
       EA_BASES_64BIT
       REGS_XMM
@@ -714,10 +715,10 @@ static bool translateRMMemory(MCInst &mcInst, InternalInstruction &insn,
 #undef ENTRY
       }
     } else {
-      indexReg = MCOperand::CreateReg(0);
+      indexReg = MCOperand::createReg(0);
     }
 
-    scaleAmount = MCOperand::CreateImm(insn.sibScale);
+    scaleAmount = MCOperand::createImm(insn.sibScale);
   } else {
     switch (insn.eaBase) {
     case EA_BASE_NONE:
@@ -731,31 +732,31 @@ static bool translateRMMemory(MCInst &mcInst, InternalInstruction &insn,
         tryAddingPcLoadReferenceComment(insn.startLocation +
                                         insn.displacementOffset,
                                         insn.displacement + pcrel, Dis);
-        baseReg = MCOperand::CreateReg(X86::RIP); // Section 2.2.1.6
+        baseReg = MCOperand::createReg(X86::RIP); // Section 2.2.1.6
       }
       else
-        baseReg = MCOperand::CreateReg(0);
+        baseReg = MCOperand::createReg(0);
 
-      indexReg = MCOperand::CreateReg(0);
+      indexReg = MCOperand::createReg(0);
       break;
     case EA_BASE_BX_SI:
-      baseReg = MCOperand::CreateReg(X86::BX);
-      indexReg = MCOperand::CreateReg(X86::SI);
+      baseReg = MCOperand::createReg(X86::BX);
+      indexReg = MCOperand::createReg(X86::SI);
       break;
     case EA_BASE_BX_DI:
-      baseReg = MCOperand::CreateReg(X86::BX);
-      indexReg = MCOperand::CreateReg(X86::DI);
+      baseReg = MCOperand::createReg(X86::BX);
+      indexReg = MCOperand::createReg(X86::DI);
       break;
     case EA_BASE_BP_SI:
-      baseReg = MCOperand::CreateReg(X86::BP);
-      indexReg = MCOperand::CreateReg(X86::SI);
+      baseReg = MCOperand::createReg(X86::BP);
+      indexReg = MCOperand::createReg(X86::SI);
       break;
     case EA_BASE_BP_DI:
-      baseReg = MCOperand::CreateReg(X86::BP);
-      indexReg = MCOperand::CreateReg(X86::DI);
+      baseReg = MCOperand::createReg(X86::BP);
+      indexReg = MCOperand::createReg(X86::DI);
       break;
     default:
-      indexReg = MCOperand::CreateReg(0);
+      indexReg = MCOperand::createReg(0);
       switch (insn.eaBase) {
       default:
         debug("Unexpected eaBase");
@@ -766,7 +767,7 @@ static bool translateRMMemory(MCInst &mcInst, InternalInstruction &insn,
         //   placeholders to keep the compiler happy.
 #define ENTRY(x)                                        \
       case EA_BASE_##x:                                 \
-        baseReg = MCOperand::CreateReg(X86::x); break;
+        baseReg = MCOperand::createReg(X86::x); break;
       ALL_EA_BASES
 #undef ENTRY
 #define ENTRY(x) case EA_REG_##x:
@@ -778,12 +779,12 @@ static bool translateRMMemory(MCInst &mcInst, InternalInstruction &insn,
       }
     }
 
-    scaleAmount = MCOperand::CreateImm(1);
+    scaleAmount = MCOperand::createImm(1);
   }
 
-  displacement = MCOperand::CreateImm(insn.displacement);
+  displacement = MCOperand::createImm(insn.displacement);
 
-  segmentReg = MCOperand::CreateReg(segmentRegnums[insn.segmentOverride]);
+  segmentReg = MCOperand::createReg(segmentRegnums[insn.segmentOverride]);
 
   mcInst.addOperand(baseReg);
   mcInst.addOperand(scaleAmount);
@@ -855,7 +856,7 @@ static bool translateRM(MCInst &mcInst, const OperandSpecifier &operand,
 /// @param stackPos     - The stack position to translate.
 static void translateFPRegister(MCInst &mcInst,
                                 uint8_t stackPos) {
-  mcInst.addOperand(MCOperand::CreateReg(X86::ST0 + stackPos));
+  mcInst.addOperand(MCOperand::createReg(X86::ST0 + stackPos));
 }
 
 /// translateMaskRegister - Translates a 3-bit mask register number to
@@ -871,7 +872,7 @@ static bool translateMaskRegister(MCInst &mcInst,
     return true;
   }
 
-  mcInst.addOperand(MCOperand::CreateReg(X86::K0 + maskRegNum));
+  mcInst.addOperand(MCOperand::createReg(X86::K0 + maskRegNum));
   return false;
 }
 

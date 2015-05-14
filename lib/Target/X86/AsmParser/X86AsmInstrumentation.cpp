@@ -245,7 +245,7 @@ protected:
     assert(VT == MVT::i32 || VT == MVT::i64);
     MCInst Inst;
     Inst.setOpcode(VT == MVT::i32 ? X86::LEA32r : X86::LEA64r);
-    Inst.addOperand(MCOperand::CreateReg(getX86SubSuperRegister(Reg, VT)));
+    Inst.addOperand(MCOperand::createReg(getX86SubSuperRegister(Reg, VT)));
     Op.addMemOperands(Inst, 5);
     EmitInstruction(Out, Inst);
   }
@@ -261,13 +261,13 @@ protected:
                                               MCContext &Ctx, int64_t *Residue);
 
   bool is64BitMode() const {
-    return STI.getFeatureBits()[X86::Mode64Bit];
+    return (STI.getFeatureBits() & X86::Mode64Bit) != 0;
   }
   bool is32BitMode() const {
-    return STI.getFeatureBits()[X86::Mode32Bit];
+    return (STI.getFeatureBits() & X86::Mode32Bit) != 0;
   }
   bool is16BitMode() const {
-    return STI.getFeatureBits()[X86::Mode16Bit];
+    return (STI.getFeatureBits() & X86::Mode16Bit) != 0;
   }
 
   unsigned getPointerWidth() {
@@ -642,7 +642,7 @@ void X86AddressSanitizer32::InstrumentMemOperandSmall(
   {
     MCInst Inst;
     Inst.setOpcode(X86::MOV8rm);
-    Inst.addOperand(MCOperand::CreateReg(ShadowRegI8));
+    Inst.addOperand(MCOperand::createReg(ShadowRegI8));
     const MCExpr *Disp = MCConstantExpr::Create(kShadowOffset, Ctx);
     std::unique_ptr<X86Operand> Op(
         X86Operand::CreateMem(getPointerWidth(), 0, Disp, ShadowRegI32, 0, 1,
@@ -725,7 +725,7 @@ void X86AddressSanitizer32::InstrumentMemOperandLarge(
         X86Operand::CreateMem(getPointerWidth(), 0, Disp, ShadowRegI32, 0, 1,
                               SMLoc(), SMLoc()));
     Op->addMemOperands(Inst, 5);
-    Inst.addOperand(MCOperand::CreateImm(0));
+    Inst.addOperand(MCOperand::createImm(0));
     EmitInstruction(Out, Inst);
   }
   MCSymbol *DoneSym = Ctx.CreateTempSymbol();
@@ -913,7 +913,7 @@ void X86AddressSanitizer64::InstrumentMemOperandSmall(
   {
     MCInst Inst;
     Inst.setOpcode(X86::MOV8rm);
-    Inst.addOperand(MCOperand::CreateReg(ShadowRegI8));
+    Inst.addOperand(MCOperand::createReg(ShadowRegI8));
     const MCExpr *Disp = MCConstantExpr::Create(kShadowOffset, Ctx);
     std::unique_ptr<X86Operand> Op(
         X86Operand::CreateMem(getPointerWidth(), 0, Disp, ShadowRegI64, 0, 1,
@@ -996,7 +996,7 @@ void X86AddressSanitizer64::InstrumentMemOperandLarge(
         X86Operand::CreateMem(getPointerWidth(), 0, Disp, ShadowRegI64, 0, 1,
                               SMLoc(), SMLoc()));
     Op->addMemOperands(Inst, 5);
-    Inst.addOperand(MCOperand::CreateImm(0));
+    Inst.addOperand(MCOperand::createImm(0));
     EmitInstruction(Out, Inst);
   }
 
@@ -1072,9 +1072,9 @@ CreateX86AsmInstrumentation(const MCTargetOptions &MCOptions,
   const bool hasCompilerRTSupport = T.isOSLinux();
   if (ClAsanInstrumentAssembly && hasCompilerRTSupport &&
       MCOptions.SanitizeAddress) {
-    if (STI.getFeatureBits()[X86::Mode32Bit] != 0)
+    if ((STI.getFeatureBits() & X86::Mode32Bit) != 0)
       return new X86AddressSanitizer32(STI);
-    if (STI.getFeatureBits()[X86::Mode64Bit] != 0)
+    if ((STI.getFeatureBits() & X86::Mode64Bit) != 0)
       return new X86AddressSanitizer64(STI);
   }
   return new X86AsmInstrumentation(STI);

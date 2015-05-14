@@ -12,10 +12,10 @@
 # CHECK:     lui     $9, 1            # encoding: [0x01,0x00,0x09,0x3c]
 # CHECK-NOT: ori $9, $9, 0            # encoding: [0x00,0x00,0x29,0x35]
 
-# CHECK: addiu   $4, $zero, 20       # encoding: [0x14,0x00,0x04,0x24]
+# CHECK: ori     $4, $zero, 20       # encoding: [0x14,0x00,0x04,0x34]
 # CHECK: lui     $7, 1               # encoding: [0x01,0x00,0x07,0x3c]
 # CHECK: ori     $7, $7, 2           # encoding: [0x02,0x00,0xe7,0x34]
-# CHECK: addiu   $4, $5, 20          # encoding: [0x14,0x00,0xa4,0x24]
+# CHECK: ori     $4, $5, 20          # encoding: [0x14,0x00,0xa4,0x34]
 # CHECK: lui     $7, 1               # encoding: [0x01,0x00,0x07,0x3c]
 # CHECK: ori     $7, $7, 2           # encoding: [0x02,0x00,0xe7,0x34]
 # CHECK: addu    $7, $7, $8          # encoding: [0x21,0x38,0xe8,0x00]
@@ -23,18 +23,6 @@
                                      #   fixup A - offset: 0, value: symbol@ABS_HI, kind: fixup_Mips_HI16
 # CHECK: ori     $8, $8, %lo(symbol) # encoding: [A,A,0x08,0x35]
                                      #   fixup A - offset: 0, value: symbol@ABS_LO, kind: fixup_Mips_LO16
-# CHECK: .set    mips64
-# CHECK: lui     $8, %highest(symbol)    # encoding: [A,A,0x08,0x3c]
-                                         #   fixup A - offset: 0, value: symbol@HIGHEST, kind: fixup_Mips_HIGHEST
-# CHECK: ori     $8, $8, %higher(symbol) # encoding: [A,A,0x08,0x35]
-                                         #   fixup A - offset: 0, value: symbol@HIGHER, kind: fixup_Mips_HIGHER
-# CHECK: dsll    $8, $8, 16              # encoding: [0x38,0x44,0x08,0x00]
-# CHECK: ori     $8, $8, %hi(symbol)     # encoding: [A,A,0x08,0x35]
-                                         #   fixup A - offset: 0, value: symbol@ABS_HI, kind: fixup_Mips_HI16
-# CHECK: dsll    $8, $8, 16              # encoding: [0x38,0x44,0x08,0x00]
-# CHECK: ori     $8, $8, %lo(symbol)     # encoding: [A,A,0x08,0x35]
-                                         #   fixup A - offset: 0, value: symbol@ABS_LO, kind: fixup_Mips_LO16
-# CHECK: .set    mips32r2
 # CHECK: lui     $10, %hi(symbol)        # encoding: [A,A,0x0a,0x3c]
 # CHECK:                                 #   fixup A - offset: 0, value: symbol@ABS_HI, kind: fixup_Mips_HI16
 # CHECK: addu    $10, $10, $4            # encoding: [0x21,0x50,0x44,0x01]
@@ -79,9 +67,6 @@
     la $a0, 20($a1)
     la $7,65538($8)
     la $t0, symbol
-    .set mips64
-    la $t0, symbol
-    .set mips32r2
 
     .set noat
     lw  $t2, symbol($a0)

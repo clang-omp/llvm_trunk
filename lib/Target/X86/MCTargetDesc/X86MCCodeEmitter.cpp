@@ -42,15 +42,15 @@ public:
   ~X86MCCodeEmitter() override {}
 
   bool is64BitMode(const MCSubtargetInfo &STI) const {
-    return STI.getFeatureBits()[X86::Mode64Bit];
+    return (STI.getFeatureBits() & X86::Mode64Bit) != 0;
   }
 
   bool is32BitMode(const MCSubtargetInfo &STI) const {
-    return STI.getFeatureBits()[X86::Mode32Bit];
+    return (STI.getFeatureBits() & X86::Mode32Bit) != 0;
   }
 
   bool is16BitMode(const MCSubtargetInfo &STI) const {
-    return STI.getFeatureBits()[X86::Mode16Bit];
+    return (STI.getFeatureBits() & X86::Mode16Bit) != 0;
   }
 
   /// Is16BitMemOperand - Return true if the specified instruction has
@@ -1475,7 +1475,7 @@ EncodeInstruction(const MCInst &MI, raw_ostream &OS,
           RegNum |= Val;
         }
       }
-      EmitImmediate(MCOperand::CreateImm(RegNum), MI.getLoc(), 1, FK_Data_1,
+      EmitImmediate(MCOperand::createImm(RegNum), MI.getLoc(), 1, FK_Data_1,
                     CurByte, OS, Fixups);
     } else {
       EmitImmediate(MI.getOperand(CurOp++), MI.getLoc(),
