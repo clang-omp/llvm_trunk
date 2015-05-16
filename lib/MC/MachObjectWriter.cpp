@@ -633,7 +633,7 @@ void MachObjectWriter::ComputeSymbolTable(
         continue;
 
       // Set the Index and the IsExtern bit.
-      unsigned Index = Rel.Sym->getIndex();
+      unsigned Index = Rel.Sym->getData().getIndex();
       assert(isInt<24>(Index));
       if (IsLittleEndian)
         Rel.MRE.r_word1 = (Rel.MRE.r_word1 & (~0U << 24)) | Index | (1 << 27);
@@ -669,7 +669,7 @@ void MachObjectWriter::ExecutePostLayoutBinding(MCAssembler &Asm,
 }
 
 bool MachObjectWriter::IsSymbolRefDifferenceFullyResolvedImpl(
-    const MCAssembler &Asm, const MCSymbolData &DataA, const MCFragment &FB,
+    const MCAssembler &Asm, const MCSymbol &SymA, const MCFragment &FB,
     bool InSet, bool IsPCRel) const {
   if (InSet)
     return true;
@@ -679,9 +679,7 @@ bool MachObjectWriter::IsSymbolRefDifferenceFullyResolvedImpl(
   //   - addr(atom(B)) - offset(B)
   // and the offsets are not relocatable, so the fixup is fully resolved when
   //  addr(atom(A)) - addr(atom(B)) == 0.
-  const MCSymbolData *A_Base = nullptr, *B_Base = nullptr;
-
-  const MCSymbol &SA = findAliasedSymbol(DataA.getSymbol());
+  const MCSymbol &SA = findAliasedSymbol(SymA);
   const MCSection &SecA = SA.getSection();
   const MCSection &SecB = FB.getParent()->getSection();
 
@@ -733,11 +731,8 @@ bool MachObjectWriter::IsSymbolRefDifferenceFullyResolvedImpl(
   if (!FA)
     return false;
 
-  A_Base = FA->getAtom();
-  B_Base = FB.getAtom();
-
   // If the atoms are the same, they are guaranteed to have the same address.
-  if (A_Base == B_Base)
+  if (FA->getAtom() == FB.getAtom())
     return true;
 
   // Otherwise, we can't prove this is fully resolved.
