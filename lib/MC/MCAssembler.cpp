@@ -360,12 +360,17 @@ void MCSectionData::setBundleLockState(BundleLockStateType NewState) {
 
 MCSymbolData::MCSymbolData() : Symbol(nullptr) {}
 
-MCSymbolData::MCSymbolData(const MCSymbol &Symbol, MCFragment *Fragment,
-                           uint64_t Offset, MCAssembler *A)
-    : Symbol(&Symbol), Fragment(Fragment), Offset(Offset), SymbolSize(nullptr),
-      CommonAlign(-1U), Flags(0), Index(0) {
-  if (A)
-    A->getSymbolList().push_back(this);
+void MCSymbolData::initialize(const MCSymbol &Symbol, MCFragment *Fragment,
+                              uint64_t Offset) {
+  assert(!isInitialized() && "Expected uninitialized symbol");
+
+  this->Symbol = &Symbol;
+  this->Fragment.setPointer(Fragment);
+  this->Offset = Offset;
+  this->SymbolSize = nullptr;
+  this->CommonAlign = -1U;
+  this->Flags = 0;
+  this->Index = 0;
 }
 
 /* *** */
@@ -386,7 +391,6 @@ void MCAssembler::reset() {
   Sections.clear();
   Symbols.clear();
   SectionMap.clear();
-  SymbolMap.clear();
   IndirectSymbols.clear();
   DataRegions.clear();
   LinkerOptions.clear();
@@ -1020,7 +1024,7 @@ bool MCAssembler::relaxInstruction(MCAsmLayout &Layout,
   SmallVector<MCFixup, 4> Fixups;
   SmallString<256> Code;
   raw_svector_ostream VecOS(Code);
-  getEmitter().EncodeInstruction(Relaxed, VecOS, Fixups, F.getSubtargetInfo());
+  getEmitter().encodeInstruction(Relaxed, VecOS, Fixups, F.getSubtargetInfo());
   VecOS.flush();
 
   // Update the fragment.
