@@ -155,11 +155,11 @@ RecordARMScatteredHalfRelocation(MachObjectWriter *Writer,
   const MCSymbolData *A_SD = &Asm.getSymbolData(*A);
 
   if (!A_SD->getFragment())
-    Asm.getContext().FatalError(Fixup.getLoc(),
+    Asm.getContext().reportFatalError(Fixup.getLoc(),
                        "symbol '" + A->getName() +
                        "' can not be undefined in a subtraction expression");
 
-  uint32_t Value = Writer->getSymbolAddress(A_SD, Layout);
+  uint32_t Value = Writer->getSymbolAddress(*A, Layout);
   uint32_t Value2 = 0;
   uint64_t SecAddr =
     Writer->getSectionAddress(A_SD->getFragment()->getParent());
@@ -169,13 +169,13 @@ RecordARMScatteredHalfRelocation(MachObjectWriter *Writer,
     const MCSymbolData *B_SD = &Asm.getSymbolData(B->getSymbol());
 
     if (!B_SD->getFragment())
-      Asm.getContext().FatalError(Fixup.getLoc(),
+      Asm.getContext().reportFatalError(Fixup.getLoc(),
                          "symbol '" + B->getSymbol().getName() +
                          "' can not be undefined in a subtraction expression");
 
     // Select the appropriate difference relocation type.
     Type = MachO::ARM_RELOC_HALF_SECTDIFF;
-    Value2 = Writer->getSymbolAddress(B_SD, Layout);
+    Value2 = Writer->getSymbolAddress(B->getSymbol(), Layout);
     FixedValue -= Writer->getSectionAddress(B_SD->getFragment()->getParent());
   }
 
@@ -258,11 +258,11 @@ void ARMMachObjectWriter::RecordARMScatteredRelocation(MachObjectWriter *Writer,
   const MCSymbolData *A_SD = &Asm.getSymbolData(*A);
 
   if (!A_SD->getFragment())
-    Asm.getContext().FatalError(Fixup.getLoc(),
+    Asm.getContext().reportFatalError(Fixup.getLoc(),
                        "symbol '" + A->getName() +
                        "' can not be undefined in a subtraction expression");
 
-  uint32_t Value = Writer->getSymbolAddress(A_SD, Layout);
+  uint32_t Value = Writer->getSymbolAddress(*A, Layout);
   uint64_t SecAddr = Writer->getSectionAddress(A_SD->getFragment()->getParent());
   FixedValue += SecAddr;
   uint32_t Value2 = 0;
@@ -272,13 +272,13 @@ void ARMMachObjectWriter::RecordARMScatteredRelocation(MachObjectWriter *Writer,
     const MCSymbolData *B_SD = &Asm.getSymbolData(B->getSymbol());
 
     if (!B_SD->getFragment())
-      Asm.getContext().FatalError(Fixup.getLoc(),
+      Asm.getContext().reportFatalError(Fixup.getLoc(),
                          "symbol '" + B->getSymbol().getName() +
                          "' can not be undefined in a subtraction expression");
 
     // Select the appropriate difference relocation type.
     Type = MachO::ARM_RELOC_SECTDIFF;
-    Value2 = Writer->getSymbolAddress(B_SD, Layout);
+    Value2 = Writer->getSymbolAddress(B->getSymbol(), Layout);
     FixedValue -= Writer->getSectionAddress(B_SD->getFragment()->getParent());
   }
 
@@ -359,7 +359,7 @@ void ARMMachObjectWriter::RecordRelocation(MachObjectWriter *Writer,
     // relocation type for the fixup kind. This happens when it's a fixup that's
     // expected to always be resolvable at assembly time and not have any
     // relocations needed.
-    Asm.getContext().FatalError(Fixup.getLoc(),
+    Asm.getContext().reportFatalError(Fixup.getLoc(),
                                 "unsupported relocation on symbol");
 
   // If this is a difference or a defined symbol plus an offset, then we need a
@@ -422,7 +422,7 @@ void ARMMachObjectWriter::RecordRelocation(MachObjectWriter *Writer,
       // compensate for the addend of the symbol address, if it was
       // undefined. This occurs with weak definitions, for example.
       if (!SD->getSymbol().isUndefined())
-        FixedValue -= Layout.getSymbolOffset(SD);
+        FixedValue -= Layout.getSymbolOffset(SD->getSymbol());
     } else {
       // The index is the section ordinal (1-based).
       const MCSectionData &SymSD = Asm.getSectionData(

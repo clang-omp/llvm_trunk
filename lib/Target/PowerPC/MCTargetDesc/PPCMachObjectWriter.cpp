@@ -212,7 +212,7 @@ bool PPCMachObjectWriter::RecordScatteredRelocation(
     report_fatal_error("symbol '" + A->getName() +
                        "' can not be undefined in a subtraction expression");
 
-  uint32_t Value = Writer->getSymbolAddress(A_SD, Layout);
+  uint32_t Value = Writer->getSymbolAddress(*A, Layout);
   uint64_t SecAddr =
       Writer->getSectionAddress(A_SD->getFragment()->getParent());
   FixedValue += SecAddr;
@@ -226,7 +226,7 @@ bool PPCMachObjectWriter::RecordScatteredRelocation(
                          "' can not be undefined in a subtraction expression");
 
     // FIXME: is Type correct? see include/llvm/Support/MachO.h
-    Value2 = Writer->getSymbolAddress(B_SD, Layout);
+    Value2 = Writer->getSymbolAddress(B->getSymbol(), Layout);
     FixedValue -= Writer->getSectionAddress(B_SD->getFragment()->getParent());
   }
   // FIXME: does FixedValue get used??
@@ -244,7 +244,7 @@ bool PPCMachObjectWriter::RecordScatteredRelocation(
     if (FixupOffset > 0xffffff) {
       char Buffer[32];
       format("0x%x", FixupOffset).print(Buffer, sizeof(Buffer));
-      Asm.getContext().FatalError(Fixup.getLoc(),
+      Asm.getContext().reportFatalError(Fixup.getLoc(),
                                   Twine("Section too large, can't encode "
                                         "r_address (") +
                                       Buffer + ") into 24 bits of scattered "
@@ -360,7 +360,7 @@ void PPCMachObjectWriter::RecordPPCRelocation(
       // compensate for the addend of the symbol address, if it was
       // undefined. This occurs with weak definitions, for example.
       if (!SD->getSymbol().isUndefined())
-        FixedValue -= Layout.getSymbolOffset(SD);
+        FixedValue -= Layout.getSymbolOffset(SD->getSymbol());
     } else {
       // The index is the section ordinal (1-based).
       const MCSectionData &SymSD =
