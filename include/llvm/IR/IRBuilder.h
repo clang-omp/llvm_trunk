@@ -500,7 +500,7 @@ public:
 private:
   /// \brief Create a call to a masked intrinsic with given Id.
   /// Masked intrinsic has only one overloaded type - data type.
-  CallInst *CreateMaskedIntrinsic(unsigned Id, ArrayRef<Value *> Ops,
+  CallInst *CreateMaskedIntrinsic(Intrinsic::ID Id, ArrayRef<Value *> Ops,
                                   Type *DataTy, const Twine &Name = "");
 
   Value *getCastedInt8PtrValue(Value *Ptr);
@@ -992,6 +992,9 @@ public:
   }
   LoadInst *CreateLoad(Value *Ptr, const Twine &Name = "") {
     return Insert(new LoadInst(Ptr), Name);
+  }
+  LoadInst *CreateLoad(Type *Ty, Value *Ptr, const Twine &Name = "") {
+    return Insert(new LoadInst(Ty, Ptr), Name);
   }
   LoadInst *CreateLoad(Value *Ptr, bool isVolatile, const Twine &Name = "") {
     return Insert(new LoadInst(Ptr, nullptr, isVolatile), Name);
