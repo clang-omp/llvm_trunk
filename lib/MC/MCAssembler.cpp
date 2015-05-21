@@ -292,8 +292,8 @@ MCEncodedFragmentWithFixups::~MCEncodedFragmentWithFixups() {
 
 MCSectionData::MCSectionData() : Section(nullptr) {}
 
-MCSectionData::MCSectionData(const MCSection &Section, MCAssembler *A)
-    : Section(&Section), Ordinal(~UINT32_C(0)), Alignment(1),
+MCSectionData::MCSectionData(MCSection &Section, MCAssembler *A)
+    : Section(&Section), Ordinal(~UINT32_C(0)),
       BundleLockState(NotBundleLocked), BundleLockNestingDepth(0),
       BundleGroupBeforeFirstInst(false), HasInstructions(false) {
   if (A)
@@ -1253,8 +1253,7 @@ void MCSectionData::dump() {
   raw_ostream &OS = llvm::errs();
 
   OS << "<MCSectionData";
-  OS << " Alignment:" << getAlignment()
-     << " Fragments:[\n      ";
+  OS << " Fragments:[\n      ";
   for (iterator it = begin(), ie = end(); it != ie; ++it) {
     if (it != begin()) OS << ",\n      ";
     it->dump();

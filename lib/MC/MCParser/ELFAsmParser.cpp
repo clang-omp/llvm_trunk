@@ -527,21 +527,19 @@ EndStmt:
       }
   }
 
-  const MCSection *ELFSection = getContext().getELFSection(
-      SectionName, Type, Flags, Size, GroupName, UniqueID);
+  MCSection *ELFSection = getContext().getELFSection(SectionName, Type, Flags,
+                                                     Size, GroupName, UniqueID);
   getStreamer().SwitchSection(ELFSection, Subsection);
 
   if (getContext().getGenDwarfForAssembly()) {
-    auto &Sections = getContext().getGenDwarfSectionSyms();
-    auto InsertResult = Sections.insert(
-        std::make_pair(ELFSection, std::make_pair(nullptr, nullptr)));
-    if (InsertResult.second) {
+    bool InsertResult = getContext().addGenDwarfSection(ELFSection);
+    if (InsertResult) {
       if (getContext().getDwarfVersion() <= 2)
         Warning(loc, "DWARF2 only supports one section per compilation unit");
 
       MCSymbol *SectionStartSymbol = getContext().createTempSymbol();
       getStreamer().EmitLabel(SectionStartSymbol);
-      InsertResult.first->second.first = SectionStartSymbol;
+      ELFSection->setBeginSymbol(SectionStartSymbol);
     }
   }
 
@@ -679,7 +677,7 @@ bool ELFAsmParser::ParseDirectiveVersion(StringRef, SMLoc) {
 
   Lex();
 
-  const MCSection *Note = getContext().getELFSection(".note", ELF::SHT_NOTE, 0);
+  MCSection *Note = getContext().getELFSection(".note", ELF::SHT_NOTE, 0);
 
   getStreamer().PushSection();
   getStreamer().SwitchSection(Note);
