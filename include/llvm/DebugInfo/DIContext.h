@@ -22,7 +22,6 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/DataTypes.h"
 #include <string>
-#include <memory>
 
 namespace llvm {
 
@@ -142,7 +141,8 @@ private:
 /// on the fly.
 class LoadedObjectInfo {
 public:
-  virtual ~LoadedObjectInfo() = default;
+  LoadedObjectInfo() {}
+  virtual ~LoadedObjectInfo() {}
 
   /// Obtain the Load Address of a section by Name.
   ///
@@ -166,7 +166,11 @@ public:
   virtual bool getLoadedSectionContents(StringRef Name, StringRef &Data) const {
     return false;
   }
-  virtual std::unique_ptr<LoadedObjectInfo> clone() const = 0;
+
+  /// Obtain a copy of this LoadedObjectInfo.
+  ///
+  /// The caller is responsible for deallocation once the copy is no longer required.
+  virtual LoadedObjectInfo *clone() const = 0;
 };
 
 }
