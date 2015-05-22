@@ -317,7 +317,87 @@ struct FindConstantPointers {
   }
   bool isDone() const { return !IndexIsConstant; }
 };
+} // End anonymous namespace.
 
+namespace {
+/// \brief Struct to represent a GEP whose start and step are known fixed
+/// offsets from a base address due to SCEV's analysis.
+struct SCEVGEPDescriptor {
+  Value *BaseAddr;
+  unsigned Start;
+  unsigned Step;
+};
+} // End anonymous namespace.
+
+/// \brief Build a cache of all the GEP instructions which SCEV can describe.
+///
+/// Visit all GEPs in the loop and find those which after complete loop
+/// unrolling would become a constant, or BaseAddress+Constant. For those where
+/// we can identify small constant starts and steps from a base address, return
+/// a map from the GEP to the base, start, and step relevant for that GEP. This
+/// is essentially a simplified and fast to query form of the SCEV analysis
+/// which we can afford to look into repeatedly for different iterations of the
+/// loop.
+static SmallDenseMap<Value *, SCEVGEPDescriptor>
+buildSCEVGEPCache(const Loop &L, ScalarEvolution &SE) {
+  SmallDenseMap<Value *, SCEVGEPDescriptor> Cache;
+
+  for (auto BB : L.getBlocks()) {
+    for (Instruction &I : *BB) {
+      if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(&I)) {
+        Value *V = cast<Value>(GEP);
+        if (!SE.isSCEVable(V->getType()))
+            continue;
+        const SCEV *S = SE.getSCEV(V);
+
+        // FIXME: It'd be nice if the worklist and set used by the
+        // SCEVTraversal could be re-used between loop iterations, but the
+        // interface doesn't support that. There is no way to clear the visited
+        // sets between uses.
+        FindConstantPointers Visitor(&L, SE);
+        SCEVTraversal<FindConstantPointers> T(Visitor);
+
+        // Try to find (BaseAddress+Step+Offset) tuple.
+        // If succeeded, save it to the cache - it might help in folding
+        // loads.
+        T.visitAll(S);
+        if (!Visitor.IndexIsConstant || !Visitor.BaseAddress)
+          continue;
+
+        const SCEV *BaseAddrSE = SE.getSCEV(Visitor.BaseAddress);
+        if (BaseAddrSE->getType() != S->getType())
+          continue;
+        const SCEV *OffSE = SE.getMinusSCEV(S, BaseAddrSE);
+        const SCEVAddRecExpr *AR = dyn_cast<SCEVAddRecExpr>(OffSE);
+
+        if (!AR)
+          continue;
+
+        const SCEVConstant *StepSE =
+            dyn_cast<SCEVConstant>(AR->getStepRecurrence(SE));
+        const SCEVConstant *StartSE = dyn_cast<SCEVConstant>(AR->getStart());
+        if (!StepSE || !StartSE)
+          continue;
+
+        // Check and skip caching if doing so would require lots of bits to
+        // avoid overflow.
+        APInt Start = StartSE->getValue()->getValue();
+        APInt Step = StepSE->getValue()->getValue();
+        if (Start.getActiveBits() > 32 || Step.getActiveBits() > 32)
+          continue;
+
+        // We found a cacheable SCEV model for the GEP.
+        Cache[V] = {Visitor.BaseAddress,
+                    (unsigned)Start.getLimitedValue(),
+                    (unsigned)Step.getLimitedValue()};
+      }
+    }
+  }
+
+  return Cache;
+}
+
+namespace {
 // This class is used to get an estimate of the optimization effects that we
 // could get from complete loop unrolling. It comes from the fact that some
 // loads might be replaced with concrete constant values and that could trigger
@@ -337,12 +417,6 @@ struct FindConstantPointers {
 class UnrollAnalyzer : public InstVisitor<UnrollAnalyzer, bool> {
   typedef InstVisitor<UnrollAnalyzer, bool> Base;
   friend class InstVisitor<UnrollAnalyzer, bool>;
-
-  struct SCEVGEPDescriptor {
-    Value *BaseAddr;
-    unsigned Start;
-    unsigned Step;
-  };
 
   /// \brief The loop we're going to analyze.
   const Loop *L;
@@ -364,13 +438,13 @@ class UnrollAnalyzer : public InstVisitor<UnrollAnalyzer, bool> {
   // To avoid requesting SCEV info on every iteration, request it once, and
   // for each value that would become ConstAddress+Constant after loop
   // unrolling, save the corresponding data.
-  SmallDenseMap<Value *, SCEVGEPDescriptor> SCEVCache;
+  SmallDenseMap<Value *, SCEVGEPDescriptor> SCEVGEPCache;
 
   /// \brief Number of currently simulated iteration.
   ///
   /// If an expression is ConstAddress+Constant, then the Constant is
   /// Start + Iteration*Step, where Start and Step could be obtained from
-  /// SCEVCache.
+  /// SCEVGEPCache.
   unsigned Iteration;
 
   /// \brief Upper threshold for complete unrolling.
@@ -402,14 +476,10 @@ class UnrollAnalyzer : public InstVisitor<UnrollAnalyzer, bool> {
     else
       SimpleV = SimplifyBinOp(I.getOpcode(), LHS, RHS, DL);
 
-    if (SimpleV)
-      NumberOfOptimizedInstructions += TTI.getUserCost(&I);
-
-    if (Constant *C = dyn_cast_or_null<Constant>(SimpleV)) {
+    if (Constant *C = dyn_cast_or_null<Constant>(SimpleV))
       SimplifiedValues[&I] = C;
-      return true;
-    }
-    return false;
+
+    return SimpleV;
   }
 
   /// Try to fold load I.
@@ -419,8 +489,8 @@ class UnrollAnalyzer : public InstVisitor<UnrollAnalyzer, bool> {
       if (Constant *SimplifiedAddrOp = SimplifiedValues.lookup(AddrOp))
         AddrOp = SimplifiedAddrOp;
 
-    auto It = SCEVCache.find(AddrOp);
-    if (It == SCEVCache.end())
+    auto It = SCEVGEPCache.find(AddrOp);
+    if (It == SCEVGEPCache.end())
       return false;
     SCEVGEPDescriptor GEPDesc = It->second;
 
@@ -452,63 +522,7 @@ class UnrollAnalyzer : public InstVisitor<UnrollAnalyzer, bool> {
     assert(CV && "Constant expected.");
     SimplifiedValues[&I] = CV;
 
-    NumberOfOptimizedInstructions += TTI.getUserCost(&I);
     return true;
-  }
-
-  /// Visit all GEPs in the loop and find those which after complete loop
-  /// unrolling would become a constant, or BaseAddress+Constant.
-  ///
-  /// Such GEPs could allow to evaluate a load to a constant later - for now we
-  /// just store the corresponding BaseAddress and StartValue with StepValue in
-  /// the SCEVCache.
-  void cacheSCEVResults() {
-    for (auto BB : L->getBlocks()) {
-      for (Instruction &I : *BB) {
-        if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(&I)) {
-          Value *V = cast<Value>(GEP);
-          if (!SE.isSCEVable(V->getType()))
-              continue;
-          const SCEV *S = SE.getSCEV(V);
-          // FIXME: Hoist the initialization out of the loop.
-          FindConstantPointers Visitor(L, SE);
-          SCEVTraversal<FindConstantPointers> T(Visitor);
-          // Try to find (BaseAddress+Step+Offset) tuple.
-          // If succeeded, save it to the cache - it might help in folding
-          // loads.
-          T.visitAll(S);
-          if (!Visitor.IndexIsConstant || !Visitor.BaseAddress)
-            continue;
-
-          const SCEV *BaseAddrSE = SE.getSCEV(Visitor.BaseAddress);
-          if (BaseAddrSE->getType() != S->getType())
-            continue;
-          const SCEV *OffSE = SE.getMinusSCEV(S, BaseAddrSE);
-          const SCEVAddRecExpr *AR = dyn_cast<SCEVAddRecExpr>(OffSE);
-
-          if (!AR)
-            continue;
-
-          const SCEVConstant *StepSE =
-              dyn_cast<SCEVConstant>(AR->getStepRecurrence(SE));
-          const SCEVConstant *StartSE = dyn_cast<SCEVConstant>(AR->getStart());
-          if (!StepSE || !StartSE)
-            continue;
-
-          // Check and skip caching if doing so would require lots of bits to
-          // avoid overflow.
-          APInt Start = StartSE->getValue()->getValue();
-          APInt Step = StepSE->getValue()->getValue();
-          if (Start.getActiveBits() > 32 || Step.getActiveBits() > 32)
-            continue;
-
-          // We found a cacheable SCEV model for the GEP.
-          SCEVCache[V] = {Visitor.BaseAddress,
-                          (unsigned)Start.getLimitedValue(),
-                          (unsigned)Step.getLimitedValue()};
-        }
-      }
-    }
   }
 
 public:
@@ -551,8 +565,8 @@ public:
       return false;
 
     // To avoid compute SCEV-expressions on every iteration, compute them once
-    // and store interesting to us in SCEVCache.
-    cacheSCEVResults();
+    // and store interesting to us in SCEVGEPCache.
+    SCEVGEPCache = buildSCEVGEPCache(*L, SE);
 
     // Simulate execution of each iteration of the loop counting instructions,
     // which would be simplified.
@@ -571,7 +585,13 @@ public:
         // opportunities.
         for (Instruction &I : *BB) {
           UnrolledLoopSize += TTI.getUserCost(&I);
-          Base::visit(I);
+
+          // Visit the instruction to analyze its loop cost after unrolling,
+          // and if the visitor returns true, then we can optimize this
+          // instruction away.
+          if (Base::visit(I))
+            NumberOfOptimizedInstructions += TTI.getUserCost(&I);
+
           // If unrolled body turns out to be too big, bail out.
           if (UnrolledLoopSize - NumberOfOptimizedInstructions >
               MaxUnrolledLoopSize)
