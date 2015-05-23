@@ -230,6 +230,7 @@ static inline TargetOptions InitTargetOptionsFromCodeGenFlags() {
   TargetOptions Options;
   Options.LessPreciseFPMADOption = EnableFPMAD;
   Options.NoFramePointerElim = DisableFPElim;
+  Options.NoFramePointerElimOverride = DisableFPElim.getNumOccurrences() > 0;
   Options.AllowFPOpFusion = FuseFPOps;
   Options.UnsafeFPMath = EnableUnsafeFPMath;
   Options.NoInfsFPMath = EnableNoInfsFPMath;
@@ -285,17 +286,6 @@ static inline std::string getFeaturesStr() {
     Features.AddFeature(MAttrs[i]);
 
   return Features.getString();
-}
-
-static inline void overrideFunctionAttributes(StringRef CPU, StringRef Features,
-                                              Module &M) {
-  for (auto &F : M) {
-    if (!CPU.empty())
-      llvm::overrideFunctionAttribute("target-cpu", CPU, F);
-
-    if (!Features.empty())
-      llvm::overrideFunctionAttribute("target-features", Features, F);
-  }
 }
 
 #endif

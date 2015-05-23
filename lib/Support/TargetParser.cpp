@@ -16,6 +16,7 @@
 #include "llvm/Support/TargetParser.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
+#include <cctype>
 
 using namespace llvm;
 
@@ -279,14 +280,17 @@ StringRef ARMTargetParser::getArchSynonym(StringRef Arch) {
 
 // MArch is expected to be of the form (arm|thumb)?(eb)?(v.+)?(eb)?, but
 // (iwmmxt|xscale)(eb)? is also permitted. If the former, return
-// "v.+", if the latter, return unmodified string. If invalid, return "".
+// "v.+", if the latter, return unmodified string, minus 'eb'.
+// If invalid, return empty string.
 StringRef ARMTargetParser::getCanonicalArchName(StringRef Arch) {
   size_t offset = StringRef::npos;
   StringRef A = Arch;
   StringRef Error = "";
 
   // Begins with "arm" / "thumb", move past it.
-  if (A.startswith("arm"))
+  if (A.startswith("arm64"))
+    offset = 5;
+  else if (A.startswith("arm"))
     offset = 3;
   else if (A.startswith("thumb"))
     offset = 5;
@@ -305,21 +309,25 @@ StringRef ARMTargetParser::getCanonicalArchName(StringRef Arch) {
   // Or, if it ends with eb ("armv7eb"), chop it off.
   else if (A.endswith("eb"))
     A = A.substr(0, A.size() - 2);
-  // Reached the end or a 'v', canonicalise.
-  if (offset != StringRef::npos && (offset == A.size() || A[offset] == 'v'))
+  // Trim the head
+  if (offset != StringRef::npos)
     A = A.substr(offset);
 
-  // Empty string mans offset reached the end. Although valid, this arch
-  // will not have a match in the table. Return the original string.
+  // Empty string means offset reached the end, which means it's valid.
   if (A.empty())
     return Arch;
 
-  // If can't find the arch, return an empty StringRef.
-  if (parseArch(A) == ARM::AK_INVALID)
-    return Error;
+  // Only match non-marketing names
+  if (offset != StringRef::npos) {
+  // Must start with 'vN'.
+    if (A[0] != 'v' || !std::isdigit(A[1]))
+      return Error;
+    // Can't have an extra 'eb'.
+    if (A.find("eb") != StringRef::npos)
+      return Error;
+  }
 
-  // Arch will either be a 'v' name (v7a) or a marketing name (xscale)
-  // or empty, if invalid.
+  // Arch will either be a 'v' name (v7a) or a marketing name (xscale).
   return A;
 }
 
@@ -386,6 +394,74 @@ unsigned ARMTargetParser::parseArchEndian(StringRef Arch) {
     return ARM::EK_LITTLE;
 
   return ARM::EK_INVALID;
+}
+
+// Profile A/R/M
+unsigned ARMTargetParser::parseArchProfile(StringRef Arch) {
+  Arch = getCanonicalArchName(Arch);
+  switch(parseArch(Arch)) {
+  case ARM::AK_ARMV6M:
+  case ARM::AK_ARMV7M:
+  case ARM::AK_ARMV6SM:
+  case ARM::AK_ARMV7EM:
+    return ARM::PK_M;
+  case ARM::AK_ARMV7R:
+    return ARM::PK_R;
+  case ARM::AK_ARMV7:
+  case ARM::AK_ARMV7A:
+  case ARM::AK_ARMV8A:
+  case ARM::AK_ARMV8_1A:
+    return ARM::PK_A;
+  }
+  return ARM::PK_INVALID;
+}
+
+// Version number (ex. v7 = 7).
+unsigned ARMTargetParser::parseArchVersion(StringRef Arch) {
+  Arch = getCanonicalArchName(Arch);
+  switch(parseArch(Arch)) {
+  case ARM::AK_ARMV2:
+  case ARM::AK_ARMV2A:
+    return 2;
+  case ARM::AK_ARMV3:
+  case ARM::AK_ARMV3M:
+    return 3;
+  case ARM::AK_ARMV4:
+  case ARM::AK_ARMV4T:
+    return 4;
+  case ARM::AK_ARMV5:
+  case ARM::AK_ARMV5T:
+  case ARM::AK_ARMV5TE:
+  case ARM::AK_IWMMXT:
+  case ARM::AK_IWMMXT2:
+  case ARM::AK_XSCALE:
+  case ARM::AK_ARMV5E:
+  case ARM::AK_ARMV5TEJ:
+    return 5;
+  case ARM::AK_ARMV6:
+  case ARM::AK_ARMV6J:
+  case ARM::AK_ARMV6K:
+  case ARM::AK_ARMV6T2:
+  case ARM::AK_ARMV6Z:
+  case ARM::AK_ARMV6ZK:
+  case ARM::AK_ARMV6M:
+  case ARM::AK_ARMV6SM:
+  case ARM::AK_ARMV6HL:
+    return 6;
+  case ARM::AK_ARMV7:
+  case ARM::AK_ARMV7A:
+  case ARM::AK_ARMV7R:
+  case ARM::AK_ARMV7M:
+  case ARM::AK_ARMV7L:
+  case ARM::AK_ARMV7HL:
+  case ARM::AK_ARMV7S:
+  case ARM::AK_ARMV7EM:
+    return 7;
+  case ARM::AK_ARMV8A:
+  case ARM::AK_ARMV8_1A:
+    return 8;
+  }
+  return 0;
 }
 
 } // namespace llvm
