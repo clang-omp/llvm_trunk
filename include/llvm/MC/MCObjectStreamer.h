@@ -12,6 +12,7 @@
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/MC/MCAssembler.h"
+#include "llvm/MC/MCSection.h"
 #include "llvm/MC/MCStreamer.h"
 
 namespace llvm {
@@ -73,7 +74,7 @@ protected:
   void insert(MCFragment *F) {
     flushPendingLabels(F);
     CurSectionData->getFragmentList().insert(CurInsertionPoint, F);
-    F->setParent(CurSectionData);
+    F->setParent(&CurSectionData->getSection());
   }
 
   /// Get a data fragment to write into, creating a new one if the current
@@ -146,9 +147,7 @@ public:
   bool emitAbsoluteSymbolDiff(const MCSymbol *Hi, const MCSymbol *Lo,
                               unsigned Size) override;
 
-  bool mayHaveInstructions(MCSection &Sec) const override {
-    return Assembler->getOrCreateSectionData(Sec).hasInstructions();
-  }
+  bool mayHaveInstructions(MCSection &Sec) const override;
 };
 
 } // end namespace llvm

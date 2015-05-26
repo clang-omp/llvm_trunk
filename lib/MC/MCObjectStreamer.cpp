@@ -43,7 +43,7 @@ void MCObjectStreamer::flushPendingLabels(MCFragment *F, uint64_t FOffset) {
     if (!F) {
       F = new MCDataFragment();
       CurSectionData->getFragmentList().insert(CurInsertionPoint, F);
-      F->setParent(CurSectionData);
+      F->setParent(&CurSectionData->getSection());
     }
     for (MCSymbolData *SD : PendingLabels) {
       SD->setFragment(F);
@@ -230,12 +230,16 @@ void MCObjectStreamer::EmitAssignment(MCSymbol *Symbol, const MCExpr *Value) {
   MCStreamer::EmitAssignment(Symbol, Value);
 }
 
+bool MCObjectStreamer::mayHaveInstructions(MCSection &Sec) const {
+  return Sec.hasInstructions();
+}
+
 void MCObjectStreamer::EmitInstruction(const MCInst &Inst,
                                        const MCSubtargetInfo &STI) {
   MCStreamer::EmitInstruction(Inst, STI);
 
   MCSectionData *SD = getCurrentSectionData();
-  SD->setHasInstructions(true);
+  SD->getSection().setHasInstructions(true);
 
   // Now that a machine instruction has been assembled into this section, make
   // a line entry for any .loc directive that has been seen.
@@ -254,7 +258,7 @@ void MCObjectStreamer::EmitInstruction(const MCInst &Inst,
   //   group. We want to emit all such instructions into the same data
   //   fragment.
   if (Assembler.getRelaxAll() ||
-      (Assembler.isBundlingEnabled() && SD->isBundleLocked())) {
+      (Assembler.isBundlingEnabled() && SD->getSection().isBundleLocked())) {
     MCInst Relaxed;
     getAssembler().getBackend().relaxInstruction(Inst, Relaxed);
     while (getAssembler().getBackend().mayNeedRelaxation(Relaxed))
