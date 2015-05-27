@@ -785,7 +785,8 @@ Constant *BitcodeReaderValueList::getConstantFwdRef(unsigned Idx,
     resize(Idx + 1);
 
   if (Value *V = ValuePtrs[Idx]) {
-    assert(Ty == V->getType() && "Type mismatch in constant table!");
+    if (Ty != V->getType())
+      report_fatal_error("Type mismatch in constant table!");
     return cast<Constant>(V);
   }
 
@@ -1095,6 +1096,8 @@ static Attribute::AttrKind GetAttrFromCode(uint64_t Code) {
     return Attribute::InAlloca;
   case bitc::ATTR_KIND_COLD:
     return Attribute::Cold;
+  case bitc::ATTR_KIND_CONVERGENT:
+    return Attribute::Convergent;
   case bitc::ATTR_KIND_INLINE_HINT:
     return Attribute::InlineHint;
   case bitc::ATTR_KIND_IN_REG:
@@ -2956,7 +2959,8 @@ std::error_code BitcodeReader::ParseModule(bool Resume,
 
       if (Record.size() > 11) {
         if (unsigned ComdatID = Record[11]) {
-          assert(ComdatID <= ComdatList.size());
+          if (ComdatID > ComdatList.size())
+            return Error("Invalid global variable comdat ID");
           NewGV->setComdat(ComdatList[ComdatID - 1]);
         }
       } else if (hasImplicitComdat(RawLinkage)) {
@@ -3020,7 +3024,8 @@ std::error_code BitcodeReader::ParseModule(bool Resume,
 
       if (Record.size() > 12) {
         if (unsigned ComdatID = Record[12]) {
-          assert(ComdatID <= ComdatList.size());
+          if (ComdatID > ComdatList.size())
+            return Error("Invalid function comdat ID");
           Func->setComdat(ComdatList[ComdatID - 1]);
         }
       } else if (hasImplicitComdat(RawLinkage)) {

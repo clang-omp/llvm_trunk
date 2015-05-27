@@ -39,7 +39,7 @@
 using namespace llvm;
 
 bool MCELFStreamer::isBundleLocked() const {
-  return getCurrentSectionData()->getSection().isBundleLocked();
+  return getCurrentSectionData()->isBundleLocked();
 }
 
 MCELFStreamer::~MCELFStreamer() {
@@ -138,18 +138,15 @@ void MCELFStreamer::EmitAssemblerFlag(MCAssemblerFlag Flag) {
 // If bundle aligment is used and there are any instructions in the section, it
 // needs to be aligned to at least the bundle size.
 static void setSectionAlignmentForBundling(const MCAssembler &Assembler,
-                                           MCSectionData *SD) {
-  if (!SD)
-    return;
-  MCSection &Section = SD->getSection();
-  if (Assembler.isBundlingEnabled() && Section.hasInstructions() &&
-      Section.getAlignment() < Assembler.getBundleAlignSize())
-    Section.setAlignment(Assembler.getBundleAlignSize());
+                                           MCSection *Section) {
+  if (Section && Assembler.isBundlingEnabled() && Section->hasInstructions() &&
+      Section->getAlignment() < Assembler.getBundleAlignSize())
+    Section->setAlignment(Assembler.getBundleAlignSize());
 }
 
 void MCELFStreamer::ChangeSection(MCSection *Section,
                                   const MCExpr *Subsection) {
-  MCSectionData *CurSection = getCurrentSectionData();
+  MCSection *CurSection = getCurrentSectionData();
   if (CurSection && isBundleLocked())
     report_fatal_error("Unterminated .bundle_lock when changing a section");
 
@@ -204,7 +201,7 @@ bool MCELFStreamer::EmitSymbolAttribute(MCSymbol *Symbol,
     // important for matching the string table that 'as' generates.
     IndirectSymbolData ISD;
     ISD.Symbol = Symbol;
-    ISD.Section = &getCurrentSectionData()->getSection();
+    ISD.Section = getCurrentSectionData();
     getAssembler().getIndirectSymbols().push_back(ISD);
     return true;
   }
@@ -509,8 +506,7 @@ void MCELFStreamer::EmitInstToData(const MCInst &Inst,
   MCDataFragment *DF;
 
   if (Assembler.isBundlingEnabled()) {
-    MCSectionData *SD = getCurrentSectionData();
-    MCSection &Sec = SD->getSection();
+    MCSection &Sec = *getCurrentSectionData();
     if (Assembler.getRelaxAll() && isBundleLocked())
       // If the -mc-relax-all flag is used and we are bundle-locked, we re-use
       // the current bundle group.
@@ -578,8 +574,7 @@ void MCELFStreamer::EmitBundleAlignMode(unsigned AlignPow2) {
 }
 
 void MCELFStreamer::EmitBundleLock(bool AlignToEnd) {
-  MCSectionData *SD = getCurrentSectionData();
-  MCSection &Sec = SD->getSection();
+  MCSection &Sec = *getCurrentSectionData();
 
   // Sanity checks
   //
@@ -600,8 +595,7 @@ void MCELFStreamer::EmitBundleLock(bool AlignToEnd) {
 }
 
 void MCELFStreamer::EmitBundleUnlock() {
-  MCSectionData *SD = getCurrentSectionData();
-  MCSection &Sec = SD->getSection();
+  MCSection &Sec = *getCurrentSectionData();
 
   // Sanity checks
   if (!getAssembler().isBundlingEnabled())
@@ -643,11 +637,10 @@ void MCELFStreamer::Flush() {
     unsigned ByteAlignment = i->ByteAlignment;
     MCSection &Section = Symbol.getSection();
 
-    MCSectionData &SectData = getAssembler().getOrCreateSectionData(Section);
-    new MCAlignFragment(ByteAlignment, 0, 1, ByteAlignment,
-                        &SectData.getSection());
+    getAssembler().registerSection(Section);
+    new MCAlignFragment(ByteAlignment, 0, 1, ByteAlignment, &Section);
 
-    MCFragment *F = new MCFillFragment(0, 0, Size, &SectData.getSection());
+    MCFragment *F = new MCFillFragment(0, 0, Size, &Section);
     Symbol.getData().setFragment(F);
 
     // Update the maximum alignment of the section if necessary.
@@ -660,7 +653,8 @@ void MCELFStreamer::Flush() {
 
 void MCELFStreamer::FinishImpl() {
   // Ensure the last section gets aligned if necessary.
-  setSectionAlignmentForBundling(getAssembler(), getCurrentSectionData());
+  MCSection *CurSection = getCurrentSectionData();
+  setSectionAlignmentForBundling(getAssembler(), CurSection);
 
   EmitFrames(nullptr);
 
