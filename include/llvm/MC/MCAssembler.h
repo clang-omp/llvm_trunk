@@ -60,7 +60,8 @@ public:
     FT_Org,
     FT_Dwarf,
     FT_DwarfFrame,
-    FT_LEB
+    FT_LEB,
+    FT_SafeSEH
   };
 
 private:
@@ -531,6 +532,28 @@ public:
   }
 };
 
+class MCSafeSEHFragment : public MCFragment {
+  virtual void anchor();
+
+  const MCSymbol *Sym;
+
+public:
+  MCSafeSEHFragment(const MCSymbol *Sym, MCSection *Sec = nullptr)
+      : MCFragment(FT_SafeSEH, Sec), Sym(Sym) {}
+
+  /// \name Accessors
+  /// @{
+
+  const MCSymbol *getSymbol() { return Sym; }
+  const MCSymbol *getSymbol() const { return Sym; }
+
+  /// @}
+
+  static bool classof(const MCFragment *F) {
+    return F->getKind() == MCFragment::FT_SafeSEH;
+  }
+};
+
 // FIXME: This really doesn't belong here. See comments below.
 struct IndirectSymbolData {
   MCSymbol *Symbol;
@@ -563,9 +586,6 @@ public:
 
   typedef iterator_range<symbol_iterator> symbol_range;
   typedef iterator_range<const_symbol_iterator> const_symbol_range;
-
-  typedef std::vector<std::string> FileNameVectorType;
-  typedef FileNameVectorType::const_iterator const_file_name_iterator;
 
   typedef std::vector<IndirectSymbolData>::const_iterator
       const_indirect_symbol_iterator;
@@ -613,7 +633,7 @@ private:
   std::vector<std::vector<std::string>> LinkerOptions;
 
   /// List of declared file names
-  FileNameVectorType FileNames;
+  std::vector<std::string> FileNames;
 
   /// The set of function symbols for which a .thumb_func directive has
   /// been seen.
@@ -887,35 +907,20 @@ public:
 
   bool hasSymbolData(const MCSymbol &Symbol) const { return Symbol.hasData(); }
 
-  MCSymbolData &getSymbolData(const MCSymbol &Symbol) {
-    return const_cast<MCSymbolData &>(
-        static_cast<const MCAssembler &>(*this).getSymbolData(Symbol));
-  }
-
-  const MCSymbolData &getSymbolData(const MCSymbol &Symbol) const {
-    return Symbol.getData();
-  }
-
-  MCSymbolData &getOrCreateSymbolData(const MCSymbol &Symbol,
-                                      bool *Created = nullptr) {
+  void registerSymbol(const MCSymbol &Symbol, bool *Created = nullptr) {
     if (Created)
       *Created = !hasSymbolData(Symbol);
     if (!hasSymbolData(Symbol)) {
       Symbol.initializeData();
       Symbols.push_back(&Symbol);
     }
-    return Symbol.getData();
   }
 
-  const_file_name_iterator file_names_begin() const {
-    return FileNames.begin();
-  }
-
-  const_file_name_iterator file_names_end() const { return FileNames.end(); }
+  ArrayRef<std::string> getFileNames() { return FileNames; }
 
   void addFileName(StringRef FileName) {
-    if (std::find(file_names_begin(), file_names_end(), FileName) ==
-        file_names_end())
+    if (std::find(FileNames.begin(), FileNames.end(), FileName) ==
+        FileNames.end())
       FileNames.push_back(FileName);
   }
 
