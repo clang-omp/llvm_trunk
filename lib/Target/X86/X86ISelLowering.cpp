@@ -15670,11 +15670,12 @@ static SDValue LowerINTRINSIC_W_CHAIN(SDValue Op, const X86Subtarget *Subtarget,
     SDValue Addr = Op.getOperand(2);
     SDValue Chain = Op.getOperand(0);
 
+    EVT VT = DataToCompress.getValueType();
     if (isAllOnes(Mask)) // return just a store
       return DAG.getStore(Chain, dl, DataToCompress, Addr,
-                          MachinePointerInfo(), false, false, 0);
+                          MachinePointerInfo(), false, false,
+                          VT.getScalarSizeInBits()/8);
 
-    EVT VT = DataToCompress.getValueType();
     EVT MaskVT = EVT::getVectorVT(*DAG.getContext(), MVT::i1,
                                   VT.getVectorNumElements());
     EVT BitcastVT = EVT::getVectorVT(*DAG.getContext(), MVT::i1,
@@ -15686,7 +15687,8 @@ static SDValue LowerINTRINSIC_W_CHAIN(SDValue Op, const X86Subtarget *Subtarget,
     SDValue Compressed =  DAG.getNode(IntrData->Opc0, dl, VT, VMask,
                                       DataToCompress, DAG.getUNDEF(VT));
     return DAG.getStore(Chain, dl, Compressed, Addr,
-                        MachinePointerInfo(), false, false, 0);
+                        MachinePointerInfo(), false, false,
+                        VT.getScalarSizeInBits()/8);
   }
   case EXPAND_FROM_MEM: {
     SDLoc dl(Op);
@@ -15698,7 +15700,7 @@ static SDValue LowerINTRINSIC_W_CHAIN(SDValue Op, const X86Subtarget *Subtarget,
 
     if (isAllOnes(Mask)) // return just a load
       return DAG.getLoad(VT, dl, Chain, Addr, MachinePointerInfo(), false, false,
-                         false, 0);
+                         false, VT.getScalarSizeInBits()/8);
     EVT MaskVT = EVT::getVectorVT(*DAG.getContext(), MVT::i1,
                                   VT.getVectorNumElements());
     EVT BitcastVT = EVT::getVectorVT(*DAG.getContext(), MVT::i1,
@@ -15708,7 +15710,8 @@ static SDValue LowerINTRINSIC_W_CHAIN(SDValue Op, const X86Subtarget *Subtarget,
                                 DAG.getIntPtrConstant(0, dl));
 
     SDValue DataToExpand = DAG.getLoad(VT, dl, Chain, Addr, MachinePointerInfo(),
-                                   false, false, false, 0);
+                                       false, false, false,
+                                       VT.getScalarSizeInBits()/8);
 
     SDValue Results[] = {
         DAG.getNode(IntrData->Opc0, dl, VT, VMask, DataToExpand, PathThru),
@@ -18218,6 +18221,7 @@ const char *X86TargetLowering::getTargetNodeName(unsigned Opcode) const {
   case X86ISD::VPERMV3:            return "X86ISD::VPERMV3";
   case X86ISD::VPERMIV3:           return "X86ISD::VPERMIV3";
   case X86ISD::VPERMI:             return "X86ISD::VPERMI";
+  case X86ISD::VFIXUPIMM:          return "X86ISD::VFIXUPIMM";
   case X86ISD::PMULUDQ:            return "X86ISD::PMULUDQ";
   case X86ISD::PMULDQ:             return "X86ISD::PMULDQ";
   case X86ISD::PSADBW:             return "X86ISD::PSADBW";
@@ -18269,7 +18273,8 @@ const char *X86TargetLowering::getTargetNodeName(unsigned Opcode) const {
 // isLegalAddressingMode - Return true if the addressing mode represented
 // by AM is legal for this target, for a load/store of the specified type.
 bool X86TargetLowering::isLegalAddressingMode(const AddrMode &AM,
-                                              Type *Ty) const {
+                                              Type *Ty,
+                                              unsigned AS) const {
   // X86 supports extremely general addressing modes.
   CodeModel::Model M = getTargetMachine().getCodeModel();
   Reloc::Model R = getTargetMachine().getRelocationModel();
@@ -25405,7 +25410,8 @@ X86TargetLowering::getRegForInlineAsmConstraint(const TargetRegisterInfo *TRI,
 }
 
 int X86TargetLowering::getScalingFactorCost(const AddrMode &AM,
-                                            Type *Ty) const {
+                                            Type *Ty,
+                                            unsigned AS) const {
   // Scaling factors are not free at all.
   // An indexed folded instruction, i.e., inst (reg1, reg2, scale),
   // will take 2 allocations in the out of order engine instead of 1
@@ -25424,7 +25430,7 @@ int X86TargetLowering::getScalingFactorCost(const AddrMode &AM,
   // E.g., on Haswell:
   // vmovaps %ymm1, (%r8, %rdi) can use port 2 or 3.
   // vmovaps %ymm1, (%r8) can use port 2, 3, or 7.
-  if (isLegalAddressingMode(AM, Ty))
+  if (isLegalAddressingMode(AM, Ty, AS))
     // Scale represents reg2 * scale, thus account for 1
     // as soon as we use a second register.
     return AM.Scale != 0;

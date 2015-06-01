@@ -706,7 +706,7 @@ void WinCOFFObjectWriter::RecordRelocation(
 
   const MCSymbol &Symbol = Target.getSymA()->getSymbol();
   const MCSymbol &A = Symbol;
-  if (!Asm.hasSymbolData(A))
+  if (!A.isRegistered())
     Asm.getContext().reportFatalError(Fixup.getLoc(),
                                       Twine("symbol '") + A.getName() +
                                           "' can not be undefined");
@@ -1021,7 +1021,7 @@ void WinCOFFObjectWriter::WriteObject(MCAssembler &Asm,
 
   {
     sections::iterator i, ie;
-    MCAssembler::const_iterator j, je;
+    MCAssembler::iterator j, je;
 
     for (auto &Section : Sections) {
       if (Section->Number != -1) {

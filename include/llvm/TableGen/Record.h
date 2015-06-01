@@ -27,38 +27,10 @@
 
 namespace llvm {
 
-// RecTy subclasses.
-class BitRecTy;
-class BitsRecTy;
-class IntRecTy;
-class StringRecTy;
 class ListRecTy;
-class DagRecTy;
-class RecordRecTy;
-
-// Init subclasses.
-class Init;
-class UnsetInit;
-class BitInit;
-class BitsInit;
-class IntInit;
-class StringInit;
-class ListInit;
-class UnOpInit;
-class BinOpInit;
-class TernOpInit;
-class DefInit;
-class DagInit;
-class TypedInit;
-class VarInit;
-class FieldInit;
-class VarBitInit;
-class VarListElementInit;
-
-// Other classes.
+struct MultiClass;
 class Record;
 class RecordVal;
-struct MultiClass;
 class RecordKeeper;
 
 //===----------------------------------------------------------------------===//
@@ -85,7 +57,7 @@ private:
 public:
   RecTyKind getRecTyKind() const { return Kind; }
 
-  RecTy(RecTyKind K) : Kind(K), ListTy(nullptr) {}
+  RecTy(RecTyKind K) : Kind(K) {}
   virtual ~RecTy() {}
 
   virtual std::string getAsString() const = 0;
@@ -167,7 +139,6 @@ class StringRecTy : public RecTy {
   static StringRecTy Shared;
   StringRecTy() : RecTy(StringRecTyKind) {}
 
-  virtual void anchor();
 public:
   static bool classof(const RecTy *RT) {
     return RT->getRecTyKind() == StringRecTyKind;
@@ -175,7 +146,7 @@ public:
 
   static StringRecTy *get() { return &Shared; }
 
-  std::string getAsString() const override { return "string"; }
+  std::string getAsString() const override;
 };
 
 /// ListRecTy - 'list<Ty>' - Represent a list of values, all of which must be of
@@ -205,7 +176,6 @@ class DagRecTy : public RecTy {
   static DagRecTy Shared;
   DagRecTy() : RecTy(DagRecTyKind) {}
 
-  virtual void anchor();
 public:
   static bool classof(const RecTy *RT) {
     return RT->getRecTyKind() == DagRecTyKind;
@@ -213,7 +183,7 @@ public:
 
   static DagRecTy *get() { return &Shared; }
 
-  std::string getAsString() const override { return "dag"; }
+  std::string getAsString() const override;
 };
 
 /// RecordRecTy - '[classname]' - Represent an instance of a class, such as:
