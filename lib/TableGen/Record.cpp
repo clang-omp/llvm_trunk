@@ -504,8 +504,8 @@ Init *ListInit::convertInitializerTo(RecTy *Ty) const {
 
     // Verify that all of the elements of the list are subclasses of the
     // appropriate class!
-    for (unsigned i = 0, e = getSize(); i != e; ++i)
-      if (Init *CI = getElement(i)->convertInitializerTo(LRT->getElementType()))
+    for (Init *I : getValues())
+      if (Init *CI = I->convertInitializerTo(LRT->getElementType()))
         Elements.push_back(CI);
       else
         return nullptr;
@@ -521,7 +521,7 @@ Init *
 ListInit::convertInitListSlice(const std::vector<unsigned> &Elements) const {
   std::vector<Init*> Vals;
   for (unsigned i = 0, e = Elements.size(); i != e; ++i) {
-    if (Elements[i] >= getSize())
+    if (Elements[i] >= size())
       return nullptr;
     Vals.push_back(getElement(Elements[i]));
   }
@@ -538,12 +538,11 @@ Record *ListInit::getElementAsRecord(unsigned i) const {
 
 Init *ListInit::resolveReferences(Record &R, const RecordVal *RV) const {
   std::vector<Init*> Resolved;
-  Resolved.reserve(getSize());
+  Resolved.reserve(size());
   bool Changed = false;
 
-  for (unsigned i = 0, e = getSize(); i != e; ++i) {
+  for (Init *CurElt : getValues()) {
     Init *E;
-    Init *CurElt = getElement(i);
 
     do {
       E = CurElt;
@@ -560,7 +559,7 @@ Init *ListInit::resolveReferences(Record &R, const RecordVal *RV) const {
 
 Init *ListInit::resolveListElementReference(Record &R, const RecordVal *IRV,
                                             unsigned Elt) const {
-  if (Elt >= getSize())
+  if (Elt >= size())
     return nullptr;  // Out of range reference.
   Init *E = getElement(Elt);
   // If the element is set to some value, or if we are resolving a reference
@@ -1244,7 +1243,7 @@ Init *VarInit::resolveListElementReference(Record &R,
   if (!LI)
     return VarListElementInit::get(cast<TypedInit>(RV->getValue()), Elt);
 
-  if (Elt >= LI->getSize())
+  if (Elt >= LI->size())
     return nullptr;  // Out of range reference.
   Init *E = LI->getElement(Elt);
   // If the element is set to some value, or if we are resolving a reference
@@ -1413,7 +1412,7 @@ Init *FieldInit::resolveListElementReference(Record &R, const RecordVal *RV,
                                              unsigned Elt) const {
   if (Init *ListVal = Rec->getFieldInit(R, RV, FieldName))
     if (ListInit *LI = dyn_cast<ListInit>(ListVal)) {
-      if (Elt >= LI->getSize()) return nullptr;
+      if (Elt >= LI->size()) return nullptr;
       Init *E = LI->getElement(Elt);
 
       // If the element is set to some value, or if we are resolving a
@@ -1744,8 +1743,8 @@ std::vector<Record*>
 Record::getValueAsListOfDefs(StringRef FieldName) const {
   ListInit *List = getValueAsListInit(FieldName);
   std::vector<Record*> Defs;
-  for (unsigned i = 0; i < List->getSize(); i++) {
-    if (DefInit *DI = dyn_cast<DefInit>(List->getElement(i)))
+  for (Init *I : List->getValues()) {
+    if (DefInit *DI = dyn_cast<DefInit>(I))
       Defs.push_back(DI->getDef());
     else
       PrintFatalError(getLoc(), "Record `" + getName() + "', field `" +
@@ -1778,8 +1777,8 @@ std::vector<int64_t>
 Record::getValueAsListOfInts(StringRef FieldName) const {
   ListInit *List = getValueAsListInit(FieldName);
   std::vector<int64_t> Ints;
-  for (unsigned i = 0; i < List->getSize(); i++) {
-    if (IntInit *II = dyn_cast<IntInit>(List->getElement(i)))
+  for (Init *I : List->getValues()) {
+    if (IntInit *II = dyn_cast<IntInit>(I))
       Ints.push_back(II->getValue());
     else
       PrintFatalError(getLoc(), "Record `" + getName() + "', field `" +
@@ -1796,9 +1795,9 @@ std::vector<std::string>
 Record::getValueAsListOfStrings(StringRef FieldName) const {
   ListInit *List = getValueAsListInit(FieldName);
   std::vector<std::string> Strings;
-  for (unsigned i = 0; i < List->getSize(); i++) {
-    if (StringInit *II = dyn_cast<StringInit>(List->getElement(i)))
-      Strings.push_back(II->getValue());
+  for (Init *I : List->getValues()) {
+    if (StringInit *SI = dyn_cast<StringInit>(I))
+      Strings.push_back(SI->getValue());
     else
       PrintFatalError(getLoc(), "Record `" + getName() + "', field `" +
         FieldName + "' does not have a list of strings initializer!");

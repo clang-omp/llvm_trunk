@@ -93,9 +93,6 @@ public:
   void EndCOFFSymbolDef() override {
     llvm_unreachable("macho doesn't support this directive");
   }
-  void EmitELFSize(MCSymbol *Symbol, const MCExpr *Value) override {
-    llvm_unreachable("macho doesn't support this directive");
-  }
   void EmitLocalCommonSymbol(MCSymbol *Symbol, uint64_t Size,
                              unsigned ByteAlignment) override;
   void EmitZerofill(MCSection *Section, MCSymbol *Symbol = nullptr,
@@ -419,10 +416,10 @@ void MCMachOStreamer::EmitZerofill(MCSection *Section, MCSymbol *Symbol,
   if (ByteAlignment != 1)
     new MCAlignFragment(ByteAlignment, 0, 0, ByteAlignment, Section);
 
+  AssignSection(Symbol, Section);
+
   MCFragment *F = new MCFillFragment(0, 0, Size, Section);
   Symbol->setFragment(F);
-
-  AssignSection(Symbol, Section);
 
   // Update the maximum alignment on the zero fill section if necessary.
   if (ByteAlignment > Section->getAlignment())
