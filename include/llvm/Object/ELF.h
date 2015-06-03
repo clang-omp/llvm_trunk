@@ -423,12 +423,10 @@ public:
   StringRef getLoadName() const;
 };
 
-// Use an alignment of 2 for the typedefs since that is the worst case for
-// ELF files in archives.
-typedef ELFFile<ELFType<support::little, 2, false> > ELF32LEFile;
-typedef ELFFile<ELFType<support::little, 2, true> > ELF64LEFile;
-typedef ELFFile<ELFType<support::big, 2, false> > ELF32BEFile;
-typedef ELFFile<ELFType<support::big, 2, true> > ELF64BEFile;
+typedef ELFFile<ELFType<support::little, false>> ELF32LEFile;
+typedef ELFFile<ELFType<support::little, true>> ELF64LEFile;
+typedef ELFFile<ELFType<support::big, false>> ELF32BEFile;
+typedef ELFFile<ELFType<support::big, true>> ELF64BEFile;
 
 // Iterate through the version definitions, and place each Elf_Verdef
 // in the VersionMap according to its index.
@@ -918,11 +916,8 @@ ErrorOr<StringRef> ELFFile<ELFT>::getSymbolName(Elf_Sym_Iter Sym) const {
 template <class ELFT>
 ErrorOr<StringRef> ELFFile<ELFT>::getSymbolName(const Elf_Shdr *Section,
                                                 const Elf_Sym *Symb) const {
-  if (Symb->st_name == 0) {
-    const Elf_Shdr *ContainingSec = getSection(Symb);
-    if (ContainingSec)
-      return getSectionName(ContainingSec);
-  }
+  if (Symb->st_name == 0)
+    return StringRef("");
 
   const Elf_Shdr *StrTab = getSection(Section->sh_link);
   if (Symb->st_name >= StrTab->sh_size)
