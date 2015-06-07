@@ -468,7 +468,7 @@ static void AttemptToFoldSymbolOffsetDifference(
   if (SA.isUndefined() || SB.isUndefined())
     return;
 
-  if (!Asm->getWriter().IsSymbolRefDifferenceFullyResolved(*Asm, A, B, InSet))
+  if (!Asm->getWriter().isSymbolRefDifferenceFullyResolved(*Asm, A, B, InSet))
     return;
 
   if (SA.getFragment() == SB.getFragment()) {
@@ -601,6 +601,13 @@ bool MCExpr::evaluateAsValue(MCValue &Res, const MCAsmLayout &Layout) const {
 }
 
 static bool canExpand(const MCSymbol &Sym, const MCAssembler *Asm, bool InSet) {
+  const MCExpr *Expr = Sym.getVariableValue();
+  const auto *Inner = dyn_cast<MCSymbolRefExpr>(Expr);
+  if (Inner) {
+    if (Inner->getKind() == MCSymbolRefExpr::VK_WEAKREF)
+      return false;
+  }
+
   if (InSet)
     return true;
   if (!Asm)

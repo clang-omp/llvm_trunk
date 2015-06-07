@@ -23,7 +23,6 @@
 #include "llvm/MC/MCCodeEmitter.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCELFStreamer.h"
-#include "llvm/MC/MCELFSymbolFlags.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstPrinter.h"
@@ -811,6 +810,9 @@ void ARMTargetELFStreamer::emitFPUDefaultAttributes() {
                      /* OverwriteExisting= */ false);
     break;
 
+  // ABI_HardFP_use is handled in ARMAsmPrinter, so _SP_D16 is treated the same
+  // as _D16 here.
+  case ARM::FK_FPV4_SP_D16:
   case ARM::FK_VFPV4_D16:
     setAttributeItem(ARMBuildAttrs::FP_arch,
                      ARMBuildAttrs::AllowFPv4B,
@@ -825,6 +827,7 @@ void ARMTargetELFStreamer::emitFPUDefaultAttributes() {
 
   // FPV5_D16 is identical to FP_ARMV8 except for the number of D registers, so
   // uses the FP_ARMV8_D16 build attribute.
+  case ARM::FK_FPV5_SP_D16:
   case ARM::FK_FPV5_D16:
     setAttributeItem(ARMBuildAttrs::FP_arch,
                      ARMBuildAttrs::AllowFPARMv8B,
@@ -859,6 +862,7 @@ void ARMTargetELFStreamer::emitFPUDefaultAttributes() {
     break;
 
   case ARM::FK_SOFTVFP:
+  case ARM::FK_NONE:
     break;
 
   default:
@@ -970,9 +974,9 @@ void ARMTargetELFStreamer::emitLabel(MCSymbol *Symbol) {
   if (!Streamer.IsThumb)
     return;
 
-  Streamer.getOrCreateSymbolData(Symbol);
+  Streamer.getAssembler().registerSymbol(*Symbol);
   unsigned Type = cast<MCSymbolELF>(Symbol)->getType();
-  if (Type == ELF_STT_Func || Type == ELF_STT_GnuIFunc)
+  if (Type == ELF::STT_FUNC || Type == ELF::STT_GNU_IFUNC)
     Streamer.EmitThumbFunc(Symbol);
 }
 
