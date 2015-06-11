@@ -180,7 +180,7 @@ ARMBaseTargetMachine::ARMBaseTargetMachine(const Target &T, StringRef TT,
                         CPU, FS, Options, RM, CM, OL),
       TargetABI(computeTargetABI(Triple(TT), CPU, Options)),
       TLOF(createTLOF(Triple(getTargetTriple()))),
-      Subtarget(TT, CPU, FS, *this, isLittle), isLittle(isLittle) {
+      Subtarget(Triple(TT), CPU, FS, *this, isLittle), isLittle(isLittle) {
 
   // Default to triple-appropriate float ABI
   if (Options.FloatABIType == FloatABI::Default)
@@ -221,7 +221,8 @@ ARMBaseTargetMachine::getSubtargetImpl(const Function &F) const {
     // creation will depend on the TM and the code generation flags on the
     // function that reside in TargetOptions.
     resetTargetOptions(F);
-    I = llvm::make_unique<ARMSubtarget>(TargetTriple, CPU, FS, *this, isLittle);
+    I = llvm::make_unique<ARMSubtarget>(Triple(TargetTriple), CPU, FS, *this,
+                                        isLittle);
   }
   return I.get();
 }
@@ -304,10 +305,6 @@ public:
     return getTM<ARMBaseTargetMachine>();
   }
 
-  const ARMSubtarget &getARMSubtarget() const {
-    return *getARMTargetMachine().getSubtargetImpl();
-  }
-
   void addIRPasses() override;
   bool addPreISel() override;
   bool addInstSelector() override;
@@ -330,10 +327,11 @@ void ARMPassConfig::addIRPasses() {
   // Cmpxchg instructions are often used with a subsequent comparison to
   // determine whether it succeeded. We can exploit existing control-flow in
   // ldrex/strex loops to simplify this, but it needs tidying up.
-  const ARMSubtarget *Subtarget = &getARMSubtarget();
-  if (Subtarget->hasAnyDataBarrier() && !Subtarget->isThumb1Only())
-    if (TM->getOptLevel() != CodeGenOpt::None && EnableAtomicTidy)
-      addPass(createCFGSimplificationPass());
+  if (TM->getOptLevel() != CodeGenOpt::None && EnableAtomicTidy)
+    addPass(createCFGSimplificationPass(-1, [this](const Function &F) {
+      const auto &ST = this->TM->getSubtarget<ARMSubtarget>(F);
+      return ST.hasAnyDataBarrier() && !ST.isThumb1Only();
+    }));
 
   TargetPassConfig::addIRPasses();
 }
@@ -390,10 +388,13 @@ void ARMPassConfig::addPreSched2() {
 
   if (getOptLevel() != CodeGenOpt::None) {
     // in v8, IfConversion depends on Thumb instruction widths
-    if (getARMSubtarget().restrictIT())
-      addPass(createThumb2SizeReductionPass());
-    if (!getARMSubtarget().isThumb1Only())
-      addPass(&IfConverterID);
+    addPass(createThumb2SizeReductionPass([this](const Function &F) {
+      return this->TM->getSubtarget<ARMSubtarget>(F).restrictIT();
+    }));
+
+    addPass(createIfConverter([this](const Function &F) {
+      return !this->TM->getSubtarget<ARMSubtarget>(F).isThumb1Only();
+    }));
   }
   addPass(createThumb2ITBlockPass());
 }
@@ -402,8 +403,9 @@ void ARMPassConfig::addPreEmitPass() {
   addPass(createThumb2SizeReductionPass());
 
   // Constant island pass work on unbundled instructions.
-  if (getARMSubtarget().isThumb2())
-    addPass(&UnpackMachineBundlesID);
+  addPass(createUnpackMachineBundles([this](const Function &F) {
+    return this->TM->getSubtarget<ARMSubtarget>(F).isThumb2();
+  }));
 
   // Don't optimize barriers at -O0.
   if (getOptLevel() != CodeGenOpt::None)
