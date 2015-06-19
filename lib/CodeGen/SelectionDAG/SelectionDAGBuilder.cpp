@@ -78,12 +78,16 @@ LimitFPPrecision("limit-float-precision",
                  cl::location(LimitFloatPrecision),
                  cl::init(0));
 
+static cl::opt<bool>
+EnableFMFInDAG("enable-fmf-dag", cl::init(false), cl::Hidden,
+                cl::desc("Enable fast-math-flags for DAG nodes"));
+
 // Limit the width of DAG chains. This is important in general to prevent
-// prevent DAG-based analysis from blowing up. For example, alias analysis and
+// DAG-based analysis from blowing up. For example, alias analysis and
 // load clustering may not complete in reasonable time. It is difficult to
 // recognize and avoid this situation within each individual analysis, and
 // future analyses are likely to have the same behavior. Limiting DAG width is
-// the safe approach, and will be especially important with global DAGs.
+// the safe approach and will be especially important with global DAGs.
 //
 // MaxParallelChains default is arbitrarily high to avoid affecting
 // optimization, but could be lowered to improve compile time. Any ld-ld-st-st
@@ -2148,6 +2152,8 @@ void SelectionDAGBuilder::visitBinary(const User &I, unsigned OpCode) {
   bool nuw = false;
   bool nsw = false;
   bool exact = false;
+  FastMathFlags FMF;
+
   if (const OverflowingBinaryOperator *OFBinOp =
           dyn_cast<const OverflowingBinaryOperator>(&I)) {
     nuw = OFBinOp->hasNoUnsignedWrap();
@@ -2156,9 +2162,22 @@ void SelectionDAGBuilder::visitBinary(const User &I, unsigned OpCode) {
   if (const PossiblyExactOperator *ExactOp =
           dyn_cast<const PossiblyExactOperator>(&I))
     exact = ExactOp->isExact();
+  if (const FPMathOperator *FPOp = dyn_cast<const FPMathOperator>(&I))
+    FMF = FPOp->getFastMathFlags();
 
+  SDNodeFlags Flags;
+  Flags.setExact(exact);
+  Flags.setNoSignedWrap(nsw);
+  Flags.setNoUnsignedWrap(nuw);
+  if (EnableFMFInDAG) {
+    Flags.setAllowReciprocal(FMF.allowReciprocal());
+    Flags.setNoInfs(FMF.noInfs());
+    Flags.setNoNaNs(FMF.noNaNs());
+    Flags.setNoSignedZeros(FMF.noSignedZeros());
+    Flags.setUnsafeAlgebra(FMF.unsafeAlgebra());
+  }
   SDValue BinNodeValue = DAG.getNode(OpCode, getCurSDLoc(), Op1.getValueType(),
-                                     Op1, Op2, nuw, nsw, exact);
+                                     Op1, Op2, &Flags);
   setValue(&I, BinNodeValue);
 }
 
@@ -2206,9 +2225,12 @@ void SelectionDAGBuilder::visitShift(const User &I, unsigned Opcode) {
             dyn_cast<const PossiblyExactOperator>(&I))
       exact = ExactOp->isExact();
   }
-
+  SDNodeFlags Flags;
+  Flags.setExact(exact);
+  Flags.setNoSignedWrap(nsw);
+  Flags.setNoUnsignedWrap(nuw);
   SDValue Res = DAG.getNode(Opcode, getCurSDLoc(), Op1.getValueType(), Op1, Op2,
-                            nuw, nsw, exact);
+                            &Flags);
   setValue(&I, Res);
 }
 
@@ -2892,7 +2914,7 @@ void SelectionDAGBuilder::visitLoad(const LoadInst &I) {
     // Serialize volatile loads with other side effects.
     Root = getRoot();
   else if (AA->pointsToConstantMemory(
-             AliasAnalysis::Location(SV, AA->getTypeStoreSize(Ty), AAInfo))) {
+               MemoryLocation(SV, AA->getTypeStoreSize(Ty), AAInfo))) {
     // Do not serialize (non-volatile) loads of constant memory with anything.
     Root = DAG.getEntryNode();
     ConstantMemory = true;
@@ -2907,8 +2929,7 @@ void SelectionDAGBuilder::visitLoad(const LoadInst &I) {
     Root = TLI.prepareVolatileOrAtomicLoad(Root, dl, DAG);
 
   SmallVector<SDValue, 4> Values(NumValues);
-  SmallVector<SDValue, 4> Chains(std::min(unsigned(MaxParallelChains),
-                                          NumValues));
+  SmallVector<SDValue, 4> Chains(std::min(MaxParallelChains, NumValues));
   EVT PtrVT = Ptr.getValueType();
   unsigned ChainI = 0;
   for (unsigned i = 0; i != NumValues; ++i, ++ChainI) {
@@ -2972,8 +2993,7 @@ void SelectionDAGBuilder::visitStore(const StoreInst &I) {
   SDValue Ptr = getValue(PtrV);
 
   SDValue Root = getRoot();
-  SmallVector<SDValue, 4> Chains(std::min(unsigned(MaxParallelChains),
-                                          NumValues));
+  SmallVector<SDValue, 4> Chains(std::min(MaxParallelChains, NumValues));
   EVT PtrVT = Ptr.getValueType();
   bool isVolatile = I.isVolatile();
   bool isNonTemporal = I.getMetadata(LLVMContext::MD_nontemporal) != nullptr;
@@ -3141,10 +3161,8 @@ void SelectionDAGBuilder::visitMaskedLoad(const CallInst &I) {
   const MDNode *Ranges = I.getMetadata(LLVMContext::MD_range);
 
   SDValue InChain = DAG.getRoot();
-  if (AA->pointsToConstantMemory(
-      AliasAnalysis::Location(PtrOperand,
-                              AA->getTypeStoreSize(I.getType()),
-                              AAInfo))) {
+  if (AA->pointsToConstantMemory(MemoryLocation(
+          PtrOperand, AA->getTypeStoreSize(I.getType()), AAInfo))) {
     // Do not serialize (non-volatile) loads of constant memory with anything.
     InChain = DAG.getEntryNode();
   }
@@ -3186,10 +3204,9 @@ void SelectionDAGBuilder::visitMaskedGather(const CallInst &I) {
   Value *BasePtr = Ptr;
   bool UniformBase = getUniformBase(BasePtr, Base, Index, this);
   bool ConstantMemory = false;
-  if (UniformBase && AA->pointsToConstantMemory(
-      AliasAnalysis::Location(BasePtr,
-	                            AA->getTypeStoreSize(I.getType()),
-                              AAInfo))) {
+  if (UniformBase &&
+      AA->pointsToConstantMemory(
+          MemoryLocation(BasePtr, AA->getTypeStoreSize(I.getType()), AAInfo))) {
     // Do not serialize (non-volatile) loads of constant memory with anything.
     Root = DAG.getEntryNode();
     ConstantMemory = true;
@@ -7487,6 +7504,31 @@ void SelectionDAGBuilder::findJumpTables(CaseClusterVector &Clusters,
   const int64_t N = Clusters.size();
   const unsigned MinJumpTableSize = TLI.getMinimumJumpTableEntries();
 
+  // TotalCases[i]: Total nbr of cases in Clusters[0..i].
+  SmallVector<unsigned, 8> TotalCases(N);
+
+  for (unsigned i = 0; i < N; ++i) {
+    APInt Hi = Clusters[i].High->getValue();
+    APInt Lo = Clusters[i].Low->getValue();
+    TotalCases[i] = (Hi - Lo).getLimitedValue() + 1;
+    if (i != 0)
+      TotalCases[i] += TotalCases[i - 1];
+  }
+
+  if (N >= MinJumpTableSize && isDense(Clusters, &TotalCases[0], 0, N - 1)) {
+    // Cheap case: the whole range might be suitable for jump table.
+    CaseCluster JTCluster;
+    if (buildJumpTable(Clusters, 0, N - 1, SI, DefaultMBB, JTCluster)) {
+      Clusters[0] = JTCluster;
+      Clusters.resize(1);
+      return;
+    }
+  }
+
+  // The algorithm below is not suitable for -O0.
+  if (TM.getOptLevel() == CodeGenOpt::None)
+    return;
+
   // Split Clusters into minimum number of dense partitions. The algorithm uses
   // the same idea as Kannan & Proebsting "Correction to 'Producing Good Code
   // for the Case Statement'" (1994), but builds the MinPartitions array in
@@ -7500,16 +7542,6 @@ void SelectionDAGBuilder::findJumpTables(CaseClusterVector &Clusters,
   SmallVector<unsigned, 8> LastElement(N);
   // NumTables[i]: nbr of >= MinJumpTableSize partitions from Clusters[i..N-1].
   SmallVector<unsigned, 8> NumTables(N);
-  // TotalCases[i]: Total nbr of cases in Clusters[0..i].
-  SmallVector<unsigned, 8> TotalCases(N);
-
-  for (unsigned i = 0; i < N; ++i) {
-    APInt Hi = Clusters[i].High->getValue();
-    APInt Lo = Clusters[i].Low->getValue();
-    TotalCases[i] = (Hi - Lo).getLimitedValue() + 1;
-    if (i != 0)
-      TotalCases[i] += TotalCases[i - 1];
-  }
 
   // Base case: There is only one way to partition Clusters[N-1].
   MinPartitions[N - 1] = 1;
@@ -7696,6 +7728,10 @@ void SelectionDAGBuilder::findBitTestClusters(CaseClusterVector &Clusters,
   for (unsigned i = 1; i < Clusters.size(); ++i)
     assert(Clusters[i-1].High->getValue().slt(Clusters[i].Low->getValue()));
 #endif
+
+  // The algorithm below is not suitable for -O0.
+  if (TM.getOptLevel() == CodeGenOpt::None)
+    return;
 
   // If target does not have legal shift left, do not emit bit tests at all.
   const TargetLowering &TLI = DAG.getTargetLoweringInfo();
@@ -8112,11 +8148,8 @@ void SelectionDAGBuilder::visitSwitch(const SwitchInst &SI) {
     return;
   }
 
-  if (TM.getOptLevel() != CodeGenOpt::None) {
-    findJumpTables(Clusters, &SI, DefaultMBB);
-    findBitTestClusters(Clusters, &SI);
-  }
-
+  findJumpTables(Clusters, &SI, DefaultMBB);
+  findBitTestClusters(Clusters, &SI);
 
   DEBUG({
     dbgs() << "Case clusters: ";

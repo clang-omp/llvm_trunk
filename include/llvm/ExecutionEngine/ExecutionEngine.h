@@ -205,7 +205,7 @@ public:
   /// runFunction - Execute the specified function with the specified arguments,
   /// and return the result.
   virtual GenericValue runFunction(Function *F,
-                                const std::vector<GenericValue> &ArgValues) = 0;
+                                   ArrayRef<GenericValue> ArgValues) = 0;
 
   /// getPointerToNamedFunction - This method returns the address of the
   /// specified function by using the dlsym function call.  As such it is only
@@ -629,6 +629,6 @@ public:
 // Create wrappers for C Binding types (see CBindingWrapping.h).
 DEFINE_SIMPLE_CONVERSION_FUNCTIONS(ExecutionEngine, LLVMExecutionEngineRef)
 
-} // End llvm namespace
+} // namespace llvm
 
 #endif

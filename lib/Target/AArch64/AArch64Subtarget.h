@@ -91,7 +91,7 @@ public:
   }
   const Triple &getTargetTriple() const { return TargetTriple; }
   bool enableMachineScheduler() const override { return true; }
-  bool enablePostMachineScheduler() const override {
+  bool enablePostRAScheduler() const override {
     return isCortexA53() || isCortexA57();
   }
 
@@ -151,6 +151,6 @@ public:
 
   std::unique_ptr<PBQPRAConstraint> getCustomPBQPConstraints() const override;
 };
-} // End llvm namespace
+} // namespace llvm
 
 #endif

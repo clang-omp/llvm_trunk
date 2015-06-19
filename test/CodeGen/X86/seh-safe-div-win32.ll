@@ -23,7 +23,7 @@
 @str1 = internal constant [27 x i8] c"EXCEPTION_ACCESS_VIOLATION\00"
 @str2 = internal constant [29 x i8] c"EXCEPTION_INT_DIVIDE_BY_ZERO\00"
 
-define i32 @safe_div(i32* %n, i32* %d) {
+define i32 @safe_div(i32* %n, i32* %d) personality i8* bitcast (i32 (...)* @_except_handler3 to i8*) {
 entry:
   %r = alloca i32, align 4
   store i32 42, i32* %r
@@ -31,7 +31,7 @@ entry:
           to label %__try.cont unwind label %lpad
 
 lpad:
-  %vals = landingpad { i8*, i32 } personality i8* bitcast (i32 (...)* @_except_handler3 to i8*)
+  %vals = landingpad { i8*, i32 }
           catch i8* bitcast (i32 ()* @safe_div_filt0 to i8*)
           catch i8* bitcast (i32 ()* @safe_div_filt1 to i8*)
   %ehptr = extractvalue { i8*, i32 } %vals, 0
@@ -90,13 +90,13 @@ __try.cont:
 ; CHECK: jmp [[cont_bb]]
 
 ; CHECK: .section .xdata,"dr"
-; CHECK-NEXT: L__ehtable$safe_div:
+; CHECK: L__ehtable$safe_div:
 ; CHECK-NEXT: .long -1
-; CHECK-NEXT: .long _safe_div_filt0
-; CHECK-NEXT: .long [[handler0]]
-; CHECK-NEXT: .long 0
 ; CHECK-NEXT: .long _safe_div_filt1
 ; CHECK-NEXT: .long [[handler1]]
+; CHECK-NEXT: .long 0
+; CHECK-NEXT: .long _safe_div_filt0
+; CHECK-NEXT: .long [[handler0]]
 
 define void @try_body(i32* %r, i32* %n, i32* %d) {
 entry:

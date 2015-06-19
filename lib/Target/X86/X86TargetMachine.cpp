@@ -94,14 +94,15 @@ static std::string computeDataLayout(const Triple &TT) {
 
 /// X86TargetMachine ctor - Create an X86 target.
 ///
-X86TargetMachine::X86TargetMachine(const Target &T, StringRef TT, StringRef CPU,
-                                   StringRef FS, const TargetOptions &Options,
+X86TargetMachine::X86TargetMachine(const Target &T, const Triple &TT,
+                                   StringRef CPU, StringRef FS,
+                                   const TargetOptions &Options,
                                    Reloc::Model RM, CodeModel::Model CM,
                                    CodeGenOpt::Level OL)
-    : LLVMTargetMachine(T, computeDataLayout(Triple(TT)), TT, CPU, FS, Options,
-                        RM, CM, OL),
-      TLOF(createTLOF(Triple(getTargetTriple()))),
-      Subtarget(Triple(TT), CPU, FS, *this, Options.StackAlignmentOverride) {
+    : LLVMTargetMachine(T, computeDataLayout(TT), TT, CPU, FS, Options, RM, CM,
+                        OL),
+      TLOF(createTLOF(getTargetTriple())),
+      Subtarget(TT, CPU, FS, *this, Options.StackAlignmentOverride) {
   // Windows stack unwinder gets confused when execution flow "falls through"
   // after a call to 'noreturn' function.
   // To prevent that, we emit a trap for 'unreachable' IR instructions.
@@ -152,7 +153,7 @@ X86TargetMachine::getSubtargetImpl(const Function &F) const {
     // creation will depend on the TM and the code generation flags on the
     // function that reside in TargetOptions.
     resetTargetOptions(F);
-    I = llvm::make_unique<X86Subtarget>(Triple(TargetTriple), CPU, FS, *this,
+    I = llvm::make_unique<X86Subtarget>(TargetTriple, CPU, FS, *this,
                                         Options.StackAlignmentOverride);
   }
   return I.get();
@@ -217,7 +218,7 @@ bool X86PassConfig::addInstSelector() {
   addPass(createX86ISelDag(getX86TargetMachine(), getOptLevel()));
 
   // For ELF, cleanup any local-dynamic TLS accesses.
-  if (Triple(TM->getTargetTriple()).isOSBinFormatELF() &&
+  if (TM->getTargetTriple().isOSBinFormatELF() &&
       getOptLevel() != CodeGenOpt::None)
     addPass(createCleanupLocalDynamicTLSPass());
 
@@ -235,7 +236,7 @@ bool X86PassConfig::addILPOpts() {
 
 bool X86PassConfig::addPreISel() {
   // Only add this pass for 32-bit x86 Windows.
-  Triple TT(TM->getTargetTriple());
+  const Triple &TT = TM->getTargetTriple();
   if (TT.isOSWindows() && TT.getArch() == Triple::x86)
     addPass(createX86WinEHStatePass());
   return true;

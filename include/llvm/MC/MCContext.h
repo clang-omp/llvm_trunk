@@ -207,9 +207,8 @@ namespace llvm {
     bool AutoReset;
 
     MCSymbol *createSymbolImpl(const StringMapEntry<bool> *Name,
-                               bool IsTemporary);
-    MCSymbol *createSymbol(StringRef Name, bool AlwaysAddSuffix,
-                           bool IsTemporary);
+                               bool CanBeUnnamed);
+    MCSymbol *createSymbol(StringRef Name, bool AlwaysAddSuffix);
 
     MCSymbol *getOrCreateDirectionalLocalSymbol(unsigned LocalLabelVal,
                                                 unsigned Instance);

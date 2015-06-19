@@ -430,7 +430,7 @@ public:
   bool hasSinCos() const;
 
   /// True for some subtargets at > -O0.
-  bool enablePostMachineScheduler() const override;
+  bool enablePostRAScheduler() const override;
 
   // enableAtomicExpand- True if we need to expand our atomics.
   bool enableAtomicExpand() const override;
@@ -453,6 +453,6 @@ public:
   /// True if fast-isel is used.
   bool useFastISel() const;
 };
-} // End llvm namespace
+} // namespace llvm
 
 #endif  // ARMSUBTARGET_H
