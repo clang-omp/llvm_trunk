@@ -227,6 +227,8 @@ public:
                    ArchivePointerTypeTraits<const char> > Current;
   };
 
+  typedef iterator_range<Elf_Sym_Iter> Elf_Sym_Range;
+
 private:
   typedef SmallVector<const Elf_Shdr *, 2> Sections_t;
   typedef DenseMap<unsigned, unsigned> IndexMap_t;
@@ -265,6 +267,7 @@ private:
   DynRegionInfo DynHashRegion;
   DynRegionInfo DynStrRegion;
   DynRegionInfo DynSymRegion;
+  DynRegionInfo DynRelaRegion;
 
   // Pointer to SONAME entry in dynamic string table
   // This is set the first time getLoadName is called.
@@ -301,8 +304,7 @@ public:
   const T        *getEntry(uint32_t Section, uint32_t Entry) const;
   template <typename T>
   const T *getEntry(const Elf_Shdr *Section, uint32_t Entry) const;
-  const char     *getString(uint32_t section, uint32_t offset) const;
-  const char     *getString(const Elf_Shdr *section, uint32_t offset) const;
+  ErrorOr<StringRef> getString(const Elf_Shdr *Section, uint32_t Offset) const;
   const char *getDynamicString(uintX_t Offset) const;
   ErrorOr<StringRef> getSymbolVersion(const Elf_Shdr *section,
                                       const Elf_Sym *Symb,
@@ -339,6 +341,9 @@ public:
 
   Elf_Sym_Iter begin_symbols() const;
   Elf_Sym_Iter end_symbols() const;
+  Elf_Sym_Range symbols() const {
+    return make_range(begin_symbols(), end_symbols());
+  }
 
   Elf_Dyn_Iter begin_dynamic_table() const;
   /// \param NULLEnd use one past the first DT_NULL entry as the end instead of
@@ -361,6 +366,21 @@ public:
                           (const char *)DynSymRegion.Addr + DynSymRegion.Size,
                           true);
     return Elf_Sym_Iter(0, nullptr, true);
+  }
+
+  Elf_Rela_Iter begin_dyn_rela() const {
+    if (DynRelaRegion.Addr)
+      return Elf_Rela_Iter(DynRelaRegion.EntSize,
+        (const char *)DynRelaRegion.Addr);
+    return Elf_Rela_Iter(0, nullptr);
+  }
+
+  Elf_Rela_Iter end_dyn_rela() const {
+    if (DynRelaRegion.Addr)
+      return Elf_Rela_Iter(
+        DynRelaRegion.EntSize,
+        (const char *)DynRelaRegion.Addr + DynRelaRegion.Size);
+    return Elf_Rela_Iter(0, nullptr);
   }
 
   Elf_Rela_Iter begin_rela(const Elf_Shdr *sec) const {
@@ -401,13 +421,14 @@ public:
 
   uint64_t getNumSections() const;
   uintX_t getStringTableIndex() const;
-  ELF::Elf64_Word getSymbolTableIndex(const Elf_Sym *symb) const;
+  ELF::Elf64_Word getExtendedSymbolTableIndex(const Elf_Sym *symb) const;
   const Elf_Ehdr *getHeader() const { return Header; }
   const Elf_Shdr *getSection(const Elf_Sym *symb) const;
   const Elf_Shdr *getSection(uint32_t Index) const;
   const Elf_Sym *getSymbol(uint32_t index) const;
 
   ErrorOr<StringRef> getSymbolName(Elf_Sym_Iter Sym) const;
+  ErrorOr<StringRef> getStaticSymbolName(const Elf_Sym *Symb) const;
 
   /// \brief Get the name of \p Symb.
   /// \param SymTab The symbol table section \p Symb is contained in.
@@ -510,10 +531,10 @@ void ELFFile<ELFT>::LoadVersionMap() const {
 }
 
 template <class ELFT>
-ELF::Elf64_Word ELFFile<ELFT>::getSymbolTableIndex(const Elf_Sym *symb) const {
-  if (symb->st_shndx == ELF::SHN_XINDEX)
-    return ExtendedSymbolTable.lookup(symb);
-  return symb->st_shndx;
+ELF::Elf64_Word
+ELFFile<ELFT>::getExtendedSymbolTableIndex(const Elf_Sym *symb) const {
+  assert(symb->st_shndx == ELF::SHN_XINDEX);
+  return ExtendedSymbolTable.lookup(symb);
 }
 
 template <class ELFT>
@@ -762,6 +783,38 @@ ELFFile<ELFT>::ELFFile(StringRef Object, std::error_code &EC)
     }
   }
 
+  // Scan dynamic table.
+  for (Elf_Dyn_Iter DynI = begin_dynamic_table(), DynE = end_dynamic_table();
+  DynI != DynE; ++DynI) {
+    switch (DynI->d_tag) {
+    case ELF::DT_RELA: {
+      uint64_t VBase = 0;
+      const uint8_t *FBase = nullptr;
+      for (Elf_Phdr_Iter PhdrI = begin_program_headers(),
+        PhdrE = end_program_headers();
+        PhdrI != PhdrE; ++PhdrI) {
+        if (PhdrI->p_type != ELF::PT_LOAD)
+          continue;
+        if (DynI->getPtr() >= PhdrI->p_vaddr &&
+            DynI->getPtr() < PhdrI->p_vaddr + PhdrI->p_memsz) {
+          VBase = PhdrI->p_vaddr;
+          FBase = base() + PhdrI->p_offset;
+          break;
+        }
+      }
+      if (!VBase)
+        return;
+      DynRelaRegion.Addr = FBase + DynI->getPtr() - VBase;
+      break;
+    }
+    case ELF::DT_RELASZ:
+      DynRelaRegion.Size = DynI->getVal();
+      break;
+    case ELF::DT_RELAENT:
+      DynRelaRegion.EntSize = DynI->getVal();
+    }
+  }
+
   EC = std::error_code();
 }
 
@@ -881,19 +934,12 @@ ELFFile<ELFT>::getSection(uint32_t index) const {
 }
 
 template <class ELFT>
-const char *ELFFile<ELFT>::getString(uint32_t section,
-                                     ELF::Elf32_Word offset) const {
-  return getString(getSection(section), offset);
-}
-
-template <class ELFT>
-const char *ELFFile<ELFT>::getString(const Elf_Shdr *section,
-                                     ELF::Elf32_Word offset) const {
-  assert(section && section->sh_type == ELF::SHT_STRTAB && "Invalid section!");
-  if (offset >= section->sh_size)
-    // FIXME: Proper error handling.
-    report_fatal_error("Symbol name offset outside of string table!");
-  return (const char *)base() + section->sh_offset + offset;
+ErrorOr<StringRef> ELFFile<ELFT>::getString(const Elf_Shdr *Section,
+                                            ELF::Elf32_Word Offset) const {
+  assert(Section && Section->sh_type == ELF::SHT_STRTAB && "Invalid section!");
+  if (Offset >= Section->sh_size)
+    return object_error::parse_failed;
+  return StringRef((const char *)base() + Section->sh_offset + Offset);
 }
 
 template <class ELFT>
@@ -914,23 +960,22 @@ ErrorOr<StringRef> ELFFile<ELFT>::getSymbolName(Elf_Sym_Iter Sym) const {
 }
 
 template <class ELFT>
+ErrorOr<StringRef>
+ELFFile<ELFT>::getStaticSymbolName(const Elf_Sym *Symb) const {
+  return getSymbolName(dot_symtab_sec, Symb);
+}
+
+template <class ELFT>
 ErrorOr<StringRef> ELFFile<ELFT>::getSymbolName(const Elf_Shdr *Section,
                                                 const Elf_Sym *Symb) const {
-  if (Symb->st_name == 0)
-    return StringRef("");
-
   const Elf_Shdr *StrTab = getSection(Section->sh_link);
-  if (Symb->st_name >= StrTab->sh_size)
-    return object_error::parse_failed;
-  return StringRef(getString(StrTab, Symb->st_name));
+  return getString(StrTab, Symb->st_name);
 }
 
 template <class ELFT>
 ErrorOr<StringRef>
 ELFFile<ELFT>::getSectionName(const Elf_Shdr *Section) const {
-  if (Section->sh_name >= dot_shstrtab_sec->sh_size)
-    return object_error::parse_failed;
-  return StringRef(getString(dot_shstrtab_sec, Section->sh_name));
+  return getString(dot_shstrtab_sec, Section->sh_name);
 }
 
 template <class ELFT>

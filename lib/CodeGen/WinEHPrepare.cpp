@@ -76,7 +76,7 @@ public:
   WinEHPrepare(const TargetMachine *TM = nullptr)
       : FunctionPass(ID) {
     if (TM)
-      TheTriple = Triple(TM->getTargetTriple());
+      TheTriple = TM->getTargetTriple();
   }
 
   bool runOnFunction(Function &Fn) override;
@@ -2518,7 +2518,7 @@ struct WinEHNumbering {
   void calculateStateNumbers(const Function &F);
   void findActionRootLPads(const Function &F);
 };
-} // namespace
+}
 
 void WinEHNumbering::createUnwindMapEntry(int ToState, ActionHandler *AH) {
   WinEHUnwindMapEntry UME;

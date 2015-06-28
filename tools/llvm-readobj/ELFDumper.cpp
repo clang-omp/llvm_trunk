@@ -17,6 +17,7 @@
 #include "ARMEHABIPrinter.h"
 #include "Error.h"
 #include "ObjDumper.h"
+#include "StackMapPrinter.h"
 #include "StreamWriter.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SmallString.h"
@@ -47,6 +48,7 @@ public:
   void printFileHeaders() override;
   void printSections() override;
   void printRelocations() override;
+  void printDynamicRelocations() override;
   void printSymbols() override;
   void printDynamicSymbols() override;
   void printUnwindInfo() override;
@@ -59,6 +61,8 @@ public:
   void printMipsPLTGOT() override;
   void printMipsABIFlags() override;
   void printMipsReginfo() override;
+
+  void printStackMap() const override;
 
 private:
   typedef ELFFile<ELFT> ELFO;
@@ -156,9 +160,7 @@ getSectionNameIndex(const ELFO &Obj, typename ELFO::Elf_Sym_Iter Symbol,
     SectionName = "Reserved";
   else {
     if (SectionIndex == SHN_XINDEX)
-      SectionIndex = Obj.getSymbolTableIndex(&*Symbol);
-    assert(SectionIndex != SHN_XINDEX &&
-           "getSymbolTableIndex should handle this");
+      SectionIndex = Obj.getExtendedSymbolTableIndex(&*Symbol);
     const typename ELFO::Elf_Shdr *Sec = Obj.getSection(SectionIndex);
     SectionName = errorOrDefault(Obj.getSectionName(Sec));
   }
@@ -382,7 +384,8 @@ static const EnumEntry<unsigned> ElfMachineType[] = {
   LLVM_READOBJ_ENUM_ENT(ELF, EM_RL78         ),
   LLVM_READOBJ_ENUM_ENT(ELF, EM_VIDEOCORE5   ),
   LLVM_READOBJ_ENUM_ENT(ELF, EM_78KOR        ),
-  LLVM_READOBJ_ENUM_ENT(ELF, EM_56800EX      )
+  LLVM_READOBJ_ENUM_ENT(ELF, EM_56800EX      ),
+  LLVM_READOBJ_ENUM_ENT(ELF, EM_AMDGPU       )
 };
 
 static const EnumEntry<unsigned> ElfSymbolBindings[] = {
@@ -574,7 +577,13 @@ void ELFDumper<ELFT>::printFileHeaders() {
       W.printEnum  ("DataEncoding", Header->e_ident[ELF::EI_DATA],
                       makeArrayRef(ElfDataEncoding));
       W.printNumber("FileVersion", Header->e_ident[ELF::EI_VERSION]);
-      W.printEnum  ("OS/ABI", Header->e_ident[ELF::EI_OSABI],
+
+      // Handle architecture specific OS/ABI values.
+      if (Header->e_machine == ELF::EM_AMDGPU &&
+          Header->e_ident[ELF::EI_OSABI] == ELF::ELFOSABI_AMDGPU_HSA)
+        W.printHex("OS/ABI", "AMDGPU_HSA", ELF::ELFOSABI_AMDGPU_HSA);
+      else
+        W.printEnum  ("OS/ABI", Header->e_ident[ELF::EI_OSABI],
                       makeArrayRef(ElfOSABI));
       W.printNumber("ABIVersion", Header->e_ident[ELF::EI_ABIVERSION]);
       W.printBinary("Unused", makeArrayRef(Header->e_ident).slice(ELF::EI_PAD));
@@ -675,6 +684,39 @@ void ELFDumper<ELFT>::printRelocations() {
     W.unindent();
     W.startLine() << "}\n";
   }
+}
+
+template<class ELFT>
+void ELFDumper<ELFT>::printDynamicRelocations() {
+  W.startLine() << "Dynamic Relocations {\n";
+  W.indent();
+  for (typename ELFO::Elf_Rela_Iter RelI = Obj->begin_dyn_rela(),
+    RelE = Obj->end_dyn_rela();
+    RelI != RelE; ++RelI) {
+    SmallString<32> RelocName;
+    Obj->getRelocationTypeName(RelI->getType(Obj->isMips64EL()), RelocName);
+    StringRef SymbolName;
+    uint32_t SymIndex = RelI->getSymbol(Obj->isMips64EL());
+    typename ELFO::Elf_Sym_Iter Sym = Obj->begin_dynamic_symbols() + SymIndex;
+    SymbolName = errorOrDefault(Obj->getSymbolName(Sym));
+    if (opts::ExpandRelocs) {
+      DictScope Group(W, "Relocation");
+      W.printHex("Offset", RelI->r_offset);
+      W.printNumber("Type", RelocName, (int)RelI->getType(Obj->isMips64EL()));
+      W.printString("Symbol", SymbolName.size() > 0 ? SymbolName : "-");
+      W.printHex("Addend", RelI->r_addend);
+    }
+    else {
+      raw_ostream& OS = W.startLine();
+      OS << W.hex(RelI->r_offset)
+        << " " << RelocName
+        << " " << (SymbolName.size() > 0 ? SymbolName : "-")
+        << " " << W.hex(RelI->r_addend)
+        << "\n";
+    }
+  }
+  W.unindent();
+  W.startLine() << "}\n";
 }
 
 template <class ELFT>
@@ -986,6 +1028,9 @@ static void printValue(const ELFFile<ELFT> *O, uint64_t Type, uint64_t Value,
     break;
   case DT_FLAGS_1:
     printFlags(Value, makeArrayRef(ElfDynamicDTFlags1), OS);
+    break;
+  default:
+    OS << format("0x%" PRIX64, Value);
     break;
   }
 }
@@ -1451,4 +1496,26 @@ template <class ELFT> void ELFDumper<ELFT>::printMipsReginfo() {
   W.printHex("Co-Proc Mask1", Reginfo->ri_cprmask[1]);
   W.printHex("Co-Proc Mask2", Reginfo->ri_cprmask[2]);
   W.printHex("Co-Proc Mask3", Reginfo->ri_cprmask[3]);
+}
+
+template <class ELFT> void ELFDumper<ELFT>::printStackMap() const {
+  const typename ELFFile<ELFT>::Elf_Shdr *StackMapSection = nullptr;
+  for (const auto &Sec : Obj->sections()) {
+    ErrorOr<StringRef> Name = Obj->getSectionName(&Sec);
+    if (*Name == ".llvm_stackmaps") {
+      StackMapSection = &Sec;
+      break;
+    }
+  }
+
+  if (!StackMapSection)
+    return;
+
+  StringRef StackMapContents;
+  ErrorOr<ArrayRef<uint8_t>> StackMapContentsArray =
+    Obj->getSectionContents(StackMapSection);
+
+  prettyPrintStackMap(
+              llvm::outs(),
+              StackMapV1Parser<ELFT::TargetEndianness>(*StackMapContentsArray));
 }

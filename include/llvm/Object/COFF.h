@@ -636,10 +636,10 @@ protected:
                                 StringRef &Res) const override;
   std::error_code getSymbolAddress(DataRefImpl Symb,
                                    uint64_t &Res) const override;
-  uint64_t getSymbolSize(DataRefImpl Symb) const override;
+  uint64_t getSymbolValue(DataRefImpl Symb) const override;
+  uint64_t getCommonSymbolSizeImpl(DataRefImpl Symb) const override;
   uint32_t getSymbolFlags(DataRefImpl Symb) const override;
-  std::error_code getSymbolType(DataRefImpl Symb,
-                                SymbolRef::Type &Res) const override;
+  SymbolRef::Type getSymbolType(DataRefImpl Symb) const override;
   std::error_code getSymbolSection(DataRefImpl Symb,
                                    section_iterator &Res) const override;
   void moveSectionNext(DataRefImpl &Sec) const override;
@@ -680,6 +680,8 @@ public:
   COFFSymbolRef getCOFFSymbol(const DataRefImpl &Ref) const;
   COFFSymbolRef getCOFFSymbol(const SymbolRef &Symbol) const;
   const coff_relocation *getCOFFRelocation(const RelocationRef &Reloc) const;
+  unsigned getSectionID(SectionRef Sec) const;
+  unsigned getSymbolSectionID(SymbolRef Sym) const;
 
   uint8_t getBytesInAddress() const override;
   StringRef getFileFormatName() const override;
@@ -753,6 +755,9 @@ public:
       return sizeof(coff_symbol32);
     llvm_unreachable("null symbol table pointer!");
   }
+
+  iterator_range<const coff_relocation *>
+  getRelocations(const coff_section *Sec) const;
 
   std::error_code getSectionName(const coff_section *Sec, StringRef &Res) const;
   uint64_t getSectionSize(const coff_section *Sec) const;

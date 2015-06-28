@@ -96,7 +96,7 @@
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Local.h"
-#include "llvm/Transforms/Utils/VectorUtils.h"
+#include "llvm/Analysis/VectorUtils.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
 #include <algorithm>
 #include <map>
@@ -850,6 +850,8 @@ public:
         return B.CreateAdd(StartValue, Index);
 
       case IK_PtrInduction:
+        assert(Index->getType() == StepValue->getType() &&
+               "Index type does not match StepValue type");
         if (StepValue->isMinusOne())
           Index = B.CreateNeg(Index);
         else if (!StepValue->isOne())
@@ -2798,7 +2800,10 @@ void InnerLoopVectorizer::createEmptyLoop() {
       break;
     }
     case LoopVectorizationLegality::IK_PtrInduction: {
-      EndValue = II.transform(BypassBuilder, CountRoundDown);
+      Value *CRD = BypassBuilder.CreateSExtOrTrunc(CountRoundDown,
+                                                   II.StepValue->getType(),
+                                                   "cast.crd");
+      EndValue = II.transform(BypassBuilder, CRD);
       EndValue->setName("ptr.ind.end");
       break;
     }
@@ -2906,7 +2911,7 @@ struct CSEDenseMapInfo {
     return LHS->isIdenticalTo(RHS);
   }
 };
-} // namespace
+}
 
 /// \brief Check whether this block is a predicated block.
 /// Due to if predication of stores we might create a sequence of "if(pred) a[i]
@@ -3448,12 +3453,14 @@ void InnerLoopVectorizer::widenPHIInstruction(Instruction *PN,
       // This is the normalized GEP that starts counting at zero.
       Value *NormalizedIdx =
           Builder.CreateSub(Induction, ExtendedIdx, "normalized.idx");
+      NormalizedIdx =
+          Builder.CreateSExtOrTrunc(NormalizedIdx, II.StepValue->getType());
       // This is the vector of results. Notice that we don't generate
       // vector geps because scalar geps result in better code.
       for (unsigned part = 0; part < UF; ++part) {
         if (VF == 1) {
           int EltIndex = part;
-          Constant *Idx = ConstantInt::get(Induction->getType(), EltIndex);
+          Constant *Idx = ConstantInt::get(NormalizedIdx->getType(), EltIndex);
           Value *GlobalIdx = Builder.CreateAdd(NormalizedIdx, Idx);
           Value *SclrGep = II.transform(Builder, GlobalIdx);
           SclrGep->setName("next.gep");
@@ -3464,7 +3471,7 @@ void InnerLoopVectorizer::widenPHIInstruction(Instruction *PN,
         Value *VecVal = UndefValue::get(VectorType::get(P->getType(), VF));
         for (unsigned int i = 0; i < VF; ++i) {
           int EltIndex = i + part * VF;
-          Constant *Idx = ConstantInt::get(Induction->getType(), EltIndex);
+          Constant *Idx = ConstantInt::get(NormalizedIdx->getType(), EltIndex);
           Value *GlobalIdx = Builder.CreateAdd(NormalizedIdx, Idx);
           Value *SclrGep = II.transform(Builder, GlobalIdx);
           SclrGep->setName("next.gep");
@@ -4642,10 +4649,9 @@ LoopVectorizationCostModel::selectVectorizationFactor(bool OptForSize) {
 
     if (VF == 0)
       VF = MaxVectorSize;
-
-    // If the trip count that we found modulo the vectorization factor is not
-    // zero then we require a tail.
-    if (VF < 2) {
+    else {
+      // If the trip count that we found modulo the vectorization factor is not
+      // zero then we require a tail.
       emitAnalysis(VectorizationReport() <<
                    "cannot optimize for size and vectorize at the "
                    "same time. Enable vectorization of this loop "

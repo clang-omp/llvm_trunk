@@ -232,7 +232,7 @@ class ELFObjectWriter : public MCObjectWriter {
                       uint32_t GroupSymbolIndex, uint64_t Offset, uint64_t Size,
                       const MCSectionELF &Section);
   };
-} // namespace
+}
 
 void ELFObjectWriter::align(unsigned Alignment) {
   uint64_t Padding = OffsetToAlignment(OS.tell(), Alignment);
@@ -787,10 +787,15 @@ void ELFObjectWriter::computeSymbolTable(
                     Renames.count(&Symbol)))
       continue;
 
+    if (Symbol.isTemporary() && Symbol.isUndefined())
+      Ctx.reportFatalError(SMLoc(), "Undefined temporary");
+
     ELFSymbolData MSD;
     MSD.Symbol = cast<MCSymbolELF>(&Symbol);
 
     bool Local = Symbol.getBinding() == ELF::STB_LOCAL;
+    assert(Local || !Symbol.isTemporary());
+
     if (Symbol.isAbsolute()) {
       MSD.SectionIndex = ELF::SHN_ABS;
     } else if (Symbol.isCommon()) {
@@ -837,12 +842,12 @@ void ELFObjectWriter::computeSymbolTable(
     // seems that this information is not easily accessible from the
     // ELFObjectWriter.
     StringRef Name = Symbol.getName();
+    SmallString<32> Buf;
     if (!Name.startswith("?") && !Name.startswith("@?") &&
         !Name.startswith("__imp_?") && !Name.startswith("__imp_@?")) {
       // This symbol isn't following the MSVC C++ name mangling convention. We
       // can thus safely interpret the @@@ in symbol names as specifying symbol
       // versioning.
-      SmallString<32> Buf;
       size_t Pos = Name.find("@@@");
       if (Pos != StringRef::npos) {
         Buf += Name.substr(0, Pos);
