@@ -33,7 +33,6 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/MC/SubtargetFeature.h"
 #include <cstdio>
 using namespace llvm;
 
@@ -87,7 +86,6 @@ private:
   bool MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
                                OperandVector &Operands, MCStreamer &Out,
                                uint64_t &ErrorInfo,
-                               FeatureBitset &ErrorMissingFeature,
                                bool MatchingInlineAsm) override;
 /// @name Auto-generated Match Functions
 /// {
@@ -701,6 +699,25 @@ public:
     const MCConstantExpr *CE = cast<MCConstantExpr>(Expr);
     return CE->getValue() >= 0 && CE->getValue() <= 0xfff;
   }
+  bool isAddSubImmNeg() const {
+    if (!isShiftedImm() && !isImm())
+      return false;
+
+    const MCExpr *Expr;
+
+    // An ADD/SUB shifter is either 'lsl #0' or 'lsl #12'.
+    if (isShiftedImm()) {
+      unsigned Shift = ShiftedImm.ShiftAmount;
+      Expr = ShiftedImm.Val;
+      if (Shift != 0 && Shift != 12)
+        return false;
+    } else
+      Expr = getImm();
+
+    // Otherwise it should be a real negative immediate in range:
+    const MCConstantExpr *CE = dyn_cast<MCConstantExpr>(Expr);
+    return CE != nullptr && CE->getValue() < 0 && -CE->getValue() <= 0xfff;
+  }
   bool isCondCode() const { return Kind == k_CondCode; }
   bool isSIMDImmType10() const {
     if (!isImm())
@@ -1219,6 +1236,18 @@ public:
       addExpr(Inst, getImm());
       Inst.addOperand(MCOperand::createImm(0));
     }
+  }
+
+  void addAddSubImmNegOperands(MCInst &Inst, unsigned N) const {
+    assert(N == 2 && "Invalid number of operands!");
+
+    const MCExpr *MCE = isShiftedImm() ? getShiftedImmVal() : getImm();
+    const MCConstantExpr *CE = cast<MCConstantExpr>(MCE);
+    int64_t Val = -CE->getValue();
+    unsigned ShiftAmt = isShiftedImm() ? ShiftedImm.ShiftAmount : 0;
+
+    Inst.addOperand(MCOperand::createImm(Val));
+    Inst.addOperand(MCOperand::createImm(ShiftAmt));
   }
 
   void addCondCodeOperands(MCInst &Inst, unsigned N) const {
@@ -3615,13 +3644,12 @@ bool AArch64AsmParser::showMatchError(SMLoc Loc, unsigned ErrCode) {
   }
 }
 
-static const char *getSubtargetFeatureName(uint64_t Feature);
+static const char *getSubtargetFeatureName(uint64_t Val);
 
 bool AArch64AsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
                                                OperandVector &Operands,
                                                MCStreamer &Out,
                                                uint64_t &ErrorInfo,
-                                               FeatureBitset &ErrorMissingFeature,
                                                bool MatchingInlineAsm) {
   assert(!Operands.empty() && "Unexpect empty operand list!");
   AArch64Operand &Op = static_cast<AArch64Operand &>(*Operands[0]);
@@ -3897,13 +3925,13 @@ bool AArch64AsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
   // First try to match against the secondary set of tables containing the
   // short-form NEON instructions (e.g. "fadd.2s v0, v1, v2").
   unsigned MatchResult =
-      MatchInstructionImpl(Operands, Inst, ErrorInfo, ErrorMissingFeature, MatchingInlineAsm, 1);
+      MatchInstructionImpl(Operands, Inst, ErrorInfo, MatchingInlineAsm, 1);
 
   // If that fails, try against the alternate table containing long-form NEON:
   // "fadd v0.2s, v1.2s, v2.2s"
   if (MatchResult != Match_Success)
     MatchResult =
-        MatchInstructionImpl(Operands, Inst, ErrorInfo, ErrorMissingFeature, MatchingInlineAsm, 0);
+        MatchInstructionImpl(Operands, Inst, ErrorInfo, MatchingInlineAsm, 0);
 
   switch (MatchResult) {
   case Match_Success: {
@@ -3920,15 +3948,17 @@ bool AArch64AsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
     return false;
   }
   case Match_MissingFeature: {
-    assert(ErrorMissingFeature.any() && "Unknown missing feature!");
+    assert(ErrorInfo && "Unknown missing feature!");
     // Special case the error message for the very common case where only
     // a single subtarget feature is missing (neon, e.g.).
     std::string Msg = "instruction requires:";
-    for (unsigned i = 0; i < ErrorMissingFeature.size(); ++i) {
-      if (ErrorMissingFeature[i]) {
+    uint64_t Mask = 1;
+    for (unsigned i = 0; i < (sizeof(ErrorInfo)*8-1); ++i) {
+      if (ErrorInfo & Mask) {
         Msg += " ";
-        Msg += getSubtargetFeatureName(i);
+        Msg += getSubtargetFeatureName(ErrorInfo & Mask);
       }
+      Mask <<= 1;
     }
     return Error(IDLoc, Msg);
   }

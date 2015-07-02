@@ -298,33 +298,30 @@ PrettyPrinter &selectPrettyPrinter(Triple const &Triple) {
 }
 
 template <class ELFT>
-static const typename ELFObjectFile<ELFT>::Elf_Rel *
-getRel(const ELFFile<ELFT> &EF, DataRefImpl Rel) {
-  typedef typename ELFObjectFile<ELFT>::Elf_Rel Elf_Rel;
-  return EF.template getEntry<Elf_Rel>(Rel.d.a, Rel.d.b);
-}
-
-template <class ELFT>
-static const typename ELFObjectFile<ELFT>::Elf_Rela *
-getRela(const ELFFile<ELFT> &EF, DataRefImpl Rela) {
-  typedef typename ELFObjectFile<ELFT>::Elf_Rela Elf_Rela;
-  return EF.template getEntry<Elf_Rela>(Rela.d.a, Rela.d.b);
-}
-
-template <class ELFT>
 static std::error_code getRelocationValueString(const ELFObjectFile<ELFT> *Obj,
                                                 DataRefImpl Rel,
                                                 SmallVectorImpl<char> &Result) {
   typedef typename ELFObjectFile<ELFT>::Elf_Sym Elf_Sym;
   typedef typename ELFObjectFile<ELFT>::Elf_Shdr Elf_Shdr;
+  typedef typename ELFObjectFile<ELFT>::Elf_Rel Elf_Rel;
+  typedef typename ELFObjectFile<ELFT>::Elf_Rela Elf_Rela;
+
   const ELFFile<ELFT> &EF = *Obj->getELFFile();
 
-  const Elf_Shdr *sec = EF.getSection(Rel.d.a);
-  const Elf_Shdr *SymTab = EF.getSection(sec->sh_link);
+  ErrorOr<const Elf_Shdr *> SecOrErr = EF.getSection(Rel.d.a);
+  if (std::error_code EC = SecOrErr.getError())
+    return EC;
+  const Elf_Shdr *Sec = *SecOrErr;
+  ErrorOr<const Elf_Shdr *> SymTabOrErr = EF.getSection(Sec->sh_link);
+  if (std::error_code EC = SymTabOrErr.getError())
+    return EC;
+  const Elf_Shdr *SymTab = *SymTabOrErr;
   assert(SymTab->sh_type == ELF::SHT_SYMTAB ||
          SymTab->sh_type == ELF::SHT_DYNSYM);
-  const Elf_Shdr *StrTabSec = EF.getSection(SymTab->sh_link);
-  ErrorOr<StringRef> StrTabOrErr = EF.getStringTable(StrTabSec);
+  ErrorOr<const Elf_Shdr *> StrTabSec = EF.getSection(SymTab->sh_link);
+  if (std::error_code EC = StrTabSec.getError())
+    return EC;
+  ErrorOr<StringRef> StrTabOrErr = EF.getStringTable(*StrTabSec);
   if (std::error_code EC = StrTabOrErr.getError())
     return EC;
   StringRef StrTab = *StrTabOrErr;
@@ -332,28 +329,32 @@ static std::error_code getRelocationValueString(const ELFObjectFile<ELFT> *Obj,
   StringRef res;
   int64_t addend = 0;
   uint16_t symbol_index = 0;
-  switch (sec->sh_type) {
+  switch (Sec->sh_type) {
   default:
     return object_error::parse_failed;
   case ELF::SHT_REL: {
-    type = getRel(EF, Rel)->getType(EF.isMips64EL());
-    symbol_index = getRel(EF, Rel)->getSymbol(EF.isMips64EL());
+    const Elf_Rel *ERel = Obj->getRel(Rel);
+    type = ERel->getType(EF.isMips64EL());
+    symbol_index = ERel->getSymbol(EF.isMips64EL());
     // TODO: Read implicit addend from section data.
     break;
   }
   case ELF::SHT_RELA: {
-    type = getRela(EF, Rel)->getType(EF.isMips64EL());
-    symbol_index = getRela(EF, Rel)->getSymbol(EF.isMips64EL());
-    addend = getRela(EF, Rel)->r_addend;
+    const Elf_Rela *ERela = Obj->getRela(Rel);
+    type = ERela->getType(EF.isMips64EL());
+    symbol_index = ERela->getSymbol(EF.isMips64EL());
+    addend = ERela->r_addend;
     break;
   }
   }
   const Elf_Sym *symb =
-      EF.template getEntry<Elf_Sym>(sec->sh_link, symbol_index);
+      EF.template getEntry<Elf_Sym>(Sec->sh_link, symbol_index);
   StringRef Target;
-  const Elf_Shdr *SymSec = EF.getSection(symb);
+  ErrorOr<const Elf_Shdr *> SymSec = EF.getSection(symb);
+  if (std::error_code EC = SymSec.getError())
+    return EC;
   if (symb->getType() == ELF::STT_SECTION) {
-    ErrorOr<StringRef> SecName = EF.getSectionName(SymSec);
+    ErrorOr<StringRef> SecName = EF.getSectionName(*SymSec);
     if (std::error_code EC = SecName.getError())
       return EC;
     Target = *SecName;
