@@ -376,10 +376,8 @@ uint64_t MachOObjectFile::getSymbolValue(DataRefImpl Sym) const {
   return NValue;
 }
 
-std::error_code MachOObjectFile::getSymbolAddress(DataRefImpl Sym,
-                                                  uint64_t &Res) const {
-  Res = getSymbolValue(Sym);
-  return std::error_code();
+ErrorOr<uint64_t> MachOObjectFile::getSymbolAddress(DataRefImpl Sym) const {
+  return getSymbolValue(Sym);
 }
 
 uint32_t MachOObjectFile::getSymbolAlignment(DataRefImpl DRI) const {
@@ -392,9 +390,7 @@ uint32_t MachOObjectFile::getSymbolAlignment(DataRefImpl DRI) const {
 }
 
 uint64_t MachOObjectFile::getCommonSymbolSizeImpl(DataRefImpl DRI) const {
-  uint64_t Value;
-  getSymbolAddress(DRI, Value);
-  return Value;
+  return getSymbolValue(DRI);
 }
 
 SymbolRef::Type MachOObjectFile::getSymbolType(DataRefImpl Symb) const {
@@ -434,8 +430,7 @@ uint32_t MachOObjectFile::getSymbolFlags(DataRefImpl DRI) const {
   if (MachOType & MachO::N_EXT) {
     Result |= SymbolRef::SF_Global;
     if ((MachOType & MachO::N_TYPE) == MachO::N_UNDF) {
-      uint64_t Value;
-      getSymbolAddress(DRI, Value);
+      uint64_t Value = getSymbolValue(DRI);
       if (Value && Value != UnknownAddress)
         Result |= SymbolRef::SF_Common;
     }
