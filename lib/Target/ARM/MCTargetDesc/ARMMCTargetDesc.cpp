@@ -31,7 +31,7 @@ using namespace llvm;
 #define GET_REGINFO_MC_DESC
 #include "ARMGenRegisterInfo.inc"
 
-static bool getMCRDeprecationInfo(MCInst &MI, MCSubtargetInfo &STI,
+static bool getMCRDeprecationInfo(MCInst &MI, const MCSubtargetInfo &STI,
                                   std::string &Info) {
   if (STI.getFeatureBits()[llvm::ARM::HasV7Ops] &&
       (MI.getOperand(0).isImm() && MI.getOperand(0).getImm() == 15) &&
@@ -63,7 +63,7 @@ static bool getMCRDeprecationInfo(MCInst &MI, MCSubtargetInfo &STI,
   return false;
 }
 
-static bool getITDeprecationInfo(MCInst &MI, MCSubtargetInfo &STI,
+static bool getITDeprecationInfo(MCInst &MI, const MCSubtargetInfo &STI,
                                  std::string &Info) {
   if (STI.getFeatureBits()[llvm::ARM::HasV8Ops] && MI.getOperand(1).isImm() &&
       MI.getOperand(1).getImm() != 8) {
@@ -75,7 +75,7 @@ static bool getITDeprecationInfo(MCInst &MI, MCSubtargetInfo &STI,
   return false;
 }
 
-static bool getARMStoreDeprecationInfo(MCInst &MI, MCSubtargetInfo &STI,
+static bool getARMStoreDeprecationInfo(MCInst &MI, const MCSubtargetInfo &STI,
                                        std::string &Info) {
   assert(!STI.getFeatureBits()[llvm::ARM::ModeThumb] &&
          "cannot predicate thumb instructions");
@@ -92,7 +92,7 @@ static bool getARMStoreDeprecationInfo(MCInst &MI, MCSubtargetInfo &STI,
   return false;
 }
 
-static bool getARMLoadDeprecationInfo(MCInst &MI, MCSubtargetInfo &STI,
+static bool getARMLoadDeprecationInfo(MCInst &MI, const MCSubtargetInfo &STI,
                                       std::string &Info) {
   assert(!STI.getFeatureBits()[llvm::ARM::ModeThumb] &&
          "cannot predicate thumb instructions");
@@ -268,7 +268,7 @@ static MCInstrInfo *createARMMCInstrInfo() {
   return X;
 }
 
-static MCRegisterInfo *createARMMCRegisterInfo(StringRef Triple) {
+static MCRegisterInfo *createARMMCRegisterInfo(const Triple &Triple) {
   MCRegisterInfo *X = new MCRegisterInfo();
   InitARMMCRegisterInfo(X, ARM::LR, 0, 0, ARM::PC);
   return X;
@@ -292,14 +292,13 @@ static MCAsmInfo *createARMMCAsmInfo(const MCRegisterInfo &MRI,
   return MAI;
 }
 
-static MCCodeGenInfo *createARMMCCodeGenInfo(StringRef TT, Reloc::Model RM,
+static MCCodeGenInfo *createARMMCCodeGenInfo(const Triple &TT, Reloc::Model RM,
                                              CodeModel::Model CM,
                                              CodeGenOpt::Level OL) {
   MCCodeGenInfo *X = new MCCodeGenInfo();
   if (RM == Reloc::Default) {
-    Triple TheTriple(TT);
     // Default relocation model on Darwin is PIC, not DynamicNoPIC.
-    RM = TheTriple.isOSDarwin() ? Reloc::PIC_ : Reloc::DynamicNoPIC;
+    RM = TT.isOSDarwin() ? Reloc::PIC_ : Reloc::DynamicNoPIC;
   }
   X->initMCCodeGenInfo(RM, CM, OL);
   return X;
