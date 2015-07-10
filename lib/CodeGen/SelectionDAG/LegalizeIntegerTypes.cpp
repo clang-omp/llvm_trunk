@@ -1386,7 +1386,7 @@ void DAGTypeLegalizer::ExpandShiftByConstant(SDNode *N, const APInt &Amt,
     } else if (Amt.ugt(NVTBits)) {
       Lo = DAG.getConstant(0, DL, NVT);
       Hi = DAG.getNode(ISD::SHL, DL,
-                       NVT, InL, DAG.getConstant(-Amt + NVTBits, DL, ShTy));
+                       NVT, InL, DAG.getConstant(Amt - NVTBits, DL, ShTy));
     } else if (Amt == NVTBits) {
       Lo = DAG.getConstant(0, DL, NVT);
       Hi = InL;
