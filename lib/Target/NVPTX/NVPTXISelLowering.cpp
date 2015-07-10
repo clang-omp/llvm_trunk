@@ -888,12 +888,14 @@ NVPTXTargetLowering::LowerGlobalAddress(SDValue Op, SelectionDAG &DAG) const {
   GlobalAddressSDNode *GN = cast<GlobalAddressSDNode>(Op);
 
   const GlobalValue *GV = GN->getGlobal();
-  Op = DAG.getTargetGlobalAddress(GV, dl, getPointerTy());
-  Op = DAG.getNode(NVPTXISD::Wrapper, dl, getPointerTy(), Op);
+  Op = DAG.getTargetGlobalAddress(GV, dl, getPointerTy(DAG.getDataLayout()));
+  Op = DAG.getNode(NVPTXISD::Wrapper, dl,
+                   getPointerTy(DAG.getDataLayout()), Op);
 
   // We need to consider any offset that comes with the global
   if (GN->getOffset()) {
-    SDValue Offset = DAG.getConstant(GN->getOffset(), dl, getPointerTy());
+    SDValue Offset =
+      DAG.getConstant(GN->getOffset(), dl, getPointerTy(DAG.getDataLayout()));
     Op = DAG.getNode(ISD::ADD, Op, getPointerTy(), Op, Offset);
   }
 
