@@ -67,6 +67,8 @@ struct MIToken {
     kw_ppc_fp128,
     kw_target_flags,
     kw_volatile,
+    kw_non_temporal,
+    kw_invariant,
 
     // Identifier tokens
     Identifier,
@@ -128,7 +130,10 @@ public:
            Kind == kw_early_clobber || Kind == kw_debug_use;
   }
 
-  bool isMemoryOperandFlag() const { return Kind == kw_volatile; }
+  bool isMemoryOperandFlag() const {
+    return Kind == kw_volatile || Kind == kw_non_temporal ||
+           Kind == kw_invariant;
+  }
 
   bool is(TokenKind K) const { return Kind == K; }
 
