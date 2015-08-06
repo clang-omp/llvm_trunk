@@ -923,7 +923,7 @@ std::string NVPTXTargetLowering::getPrototype(
     O << "(";
     if (retTy->isFloatingPointTy() || retTy->isIntegerTy()) {
       unsigned size = 0;
-      if (const IntegerType *ITy = dyn_cast<IntegerType>(retTy)) {
+      if (auto *ITy = dyn_cast<IntegerType>(retTy)) {
         size = ITy->getBitWidth();
         if (size < 32)
           size = 32;
@@ -994,7 +994,7 @@ std::string NVPTXTargetLowering::getPrototype(
       O << "_";
       continue;
     }
-    const PointerType *PTy = dyn_cast<PointerType>(Ty);
+    auto *PTy = dyn_cast<PointerType>(Ty);
     assert(PTy && "Param with byval attribute should be a pointer type");
     Type *ETy = PTy->getElementType();
 
@@ -1331,7 +1331,7 @@ SDValue NVPTXTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
     // struct or vector
     SmallVector<EVT, 16> vtparts;
     SmallVector<uint64_t, 16> Offsets;
-    const PointerType *PTy = dyn_cast<PointerType>(Args[i].Ty);
+    auto *PTy = dyn_cast<PointerType>(Args[i].Ty);
     assert(PTy && "Type of a byval parameter should be pointer");
     ComputePTXValueVTs(*this, DAG.getDataLayout(), PTy->getElementType(),
                        vtparts, &Offsets, 0);
@@ -2053,8 +2053,8 @@ bool llvm::isImageOrSamplerVal(const Value *arg, const Module *context) {
                                               "struct._image3d_t",
                                               "struct._sampler_t" };
 
-  const Type *Ty = arg->getType();
-  const PointerType *PTy = dyn_cast<PointerType>(Ty);
+  Type *Ty = arg->getType();
+  auto *PTy = dyn_cast<PointerType>(Ty);
 
   if (!PTy)
     return false;
@@ -2062,7 +2062,7 @@ bool llvm::isImageOrSamplerVal(const Value *arg, const Module *context) {
   if (!context)
     return false;
 
-  const StructType *STy = dyn_cast<StructType>(PTy->getElementType());
+  auto *STy = dyn_cast<StructType>(PTy->getElementType());
   const std::string TypeName = STy && !STy->isLiteral() ? STy->getName() : "";
 
   for (int i = 0, e = array_lengthof(specialTypes); i != e; ++i)
@@ -3760,9 +3760,7 @@ bool NVPTXTargetLowering::isLegalAddressingMode(const DataLayout &DL,
   // - [immAddr]
 
   if (AM.BaseGV) {
-    if (AM.BaseOffs || AM.HasBaseReg || AM.Scale)
-      return false;
-    return true;
+    return !AM.BaseOffs && !AM.HasBaseReg && !AM.Scale;
   }
 
   switch (AM.Scale) {
@@ -4126,25 +4124,16 @@ static bool AreMulWideOperandsDemotable(SDValue LHS, SDValue RHS,
   if (ConstantSDNode *CI = dyn_cast<ConstantSDNode>(RHS)) {
     APInt Val = CI->getAPIntValue();
     if (LHSSign == Unsigned) {
-      if (Val.isIntN(OptSize)) {
-        return true;
-      }
-      return false;
+      return Val.isIntN(OptSize);
     } else {
-      if (Val.isSignedIntN(OptSize)) {
-        return true;
-      }
-      return false;
+      return Val.isSignedIntN(OptSize);
     }
   } else {
     OperandSignedness RHSSign;
     if (!IsMulWideOperandDemotable(RHS, OptSize, RHSSign))
       return false;
 
-    if (LHSSign != RHSSign)
-      return false;
-
-    return true;
+    return LHSSign == RHSSign;
   }
 }
 

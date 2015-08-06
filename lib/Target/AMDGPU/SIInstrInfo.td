@@ -393,7 +393,7 @@ def GDS01MatchClass : GDSBaseMatchClass <"parseDSOff01OptionalOps">;
 class GLCBaseMatchClass <string parser> : AsmOperandClass {
   let Name = "GLC"#parser;
   let PredicateMethod = "isImm";
-  let ParserMethod = parser; 
+  let ParserMethod = parser;
   let RenderMethod = "addImmOperands";
 }
 
@@ -529,9 +529,11 @@ def MUBUFOffset : ComplexPattern<i64, 6, "SelectMUBUFOffset">;
 def MUBUFOffsetAtomic : ComplexPattern<i64, 4, "SelectMUBUFOffset">;
 
 def VOP3Mods0 : ComplexPattern<untyped, 4, "SelectVOP3Mods0">;
+def VOP3NoMods0 : ComplexPattern<untyped, 4, "SelectVOP3NoMods0">;
 def VOP3Mods0Clamp : ComplexPattern<untyped, 3, "SelectVOP3Mods0Clamp">;
 def VOP3Mods0Clamp0OMod : ComplexPattern<untyped, 4, "SelectVOP3Mods0Clamp0OMod">;
 def VOP3Mods  : ComplexPattern<untyped, 2, "SelectVOP3Mods">;
+def VOP3NoMods : ComplexPattern<untyped, 2, "SelectVOP3NoMods">;
 
 //===----------------------------------------------------------------------===//
 // SI assembler operands
@@ -715,19 +717,6 @@ class SOP2_Real_vi<sop2 op, string opName, dag outs, dag ins, string asm> :
   let AssemblerPredicates = [isVI];
 }
 
-multiclass SOP2_SELECT_32 <sop2 op, string opName, list<dag> pattern> {
-  def "" : SOP2_Pseudo <opName, (outs SReg_32:$dst),
-    (ins SSrc_32:$src0, SSrc_32:$src1, SCCReg:$scc), pattern>;
-
-  def _si : SOP2_Real_si <op, opName, (outs SReg_32:$dst),
-    (ins SSrc_32:$src0, SSrc_32:$src1, SCCReg:$scc),
-    opName#" $dst, $src0, $src1 [$scc]">;
-
-  def _vi : SOP2_Real_vi <op, opName, (outs SReg_32:$dst),
-    (ins SSrc_32:$src0, SSrc_32:$src1, SCCReg:$scc),
-    opName#" $dst, $src0, $src1 [$scc]">;
-}
-
 multiclass SOP2_m <sop2 op, string opName, dag outs, dag ins, string asm,
                    list<dag> pattern> {
 
@@ -756,8 +745,10 @@ multiclass SOP2_64_32 <sop2 op, string opName, list<dag> pattern> : SOP2_m <
 
 class SOPC_Helper <bits<7> op, RegisterOperand rc, ValueType vt,
                     string opName, PatLeaf cond> : SOPC <
-  op, (outs SCCReg:$dst), (ins rc:$src0, rc:$src1),
-  opName#" $src0, $src1", []>;
+  op, (outs), (ins rc:$src0, rc:$src1),
+  opName#" $src0, $src1", []> {
+  let Defs = [SCC];
+}
 
 class SOPC_32<bits<7> op, string opName, PatLeaf cond = COND_NULL>
   : SOPC_Helper<op, SSrc_32, i32, opName, cond>;
@@ -810,15 +801,20 @@ multiclass SOPK_32 <sopk op, string opName, list<dag> pattern> {
 }
 
 multiclass SOPK_SCC <sopk op, string opName, list<dag> pattern> {
-  def "" : SOPK_Pseudo <opName, (outs SCCReg:$dst),
-    (ins SReg_32:$src0, u16imm:$src1), pattern>;
+  def "" : SOPK_Pseudo <opName, (outs),
+    (ins SReg_32:$src0, u16imm:$src1), pattern> {
+    let Defs = [SCC];
+  }
 
-  let DisableEncoding = "$dst" in {
-    def _si : SOPK_Real_si <op, opName, (outs SCCReg:$dst),
-      (ins SReg_32:$sdst, u16imm:$simm16), opName#" $sdst, $simm16">;
 
-    def _vi : SOPK_Real_vi <op, opName, (outs SCCReg:$dst),
-      (ins SReg_32:$sdst, u16imm:$simm16), opName#" $sdst, $simm16">;
+  def _si : SOPK_Real_si <op, opName, (outs),
+    (ins SReg_32:$sdst, u16imm:$simm16), opName#" $sdst, $simm16"> {
+    let Defs = [SCC];
+  }
+
+  def _vi : SOPK_Real_vi <op, opName, (outs),
+    (ins SReg_32:$sdst, u16imm:$simm16), opName#" $sdst, $simm16"> {
+    let Defs = [SCC];
   }
 }
 
@@ -1112,6 +1108,13 @@ def VOP_F32_F32_F32_F32 : VOPProfile <[f32, f32, f32, f32]>;
 def VOP_MADK : VOPProfile <[f32, f32, f32, f32]> {
   field dag Ins = (ins VCSrc_32:$src0, VGPR_32:$vsrc1, u32imm:$src2);
   field string Asm = "$dst, $src0, $vsrc1, $src2";
+}
+def VOP_MAC : VOPProfile <[f32, f32, f32, f32]> {
+  let Ins32 = (ins Src0RC32:$src0, Src1RC32:$src1, VGPR_32:$src2);
+  let Ins64 = getIns64<Src0RC64, Src1RC64, RegisterOperand<VGPR_32>, 3,
+                             HasModifiers>.ret;
+  let Asm32 = getAsm32<2>.ret;
+  let Asm64 = getAsm64<2, HasModifiers>.ret;
 }
 def VOP_F64_F64_F64_F64 : VOPProfile <[f64, f64, f64, f64]>;
 def VOP_I32_I32_I32_I32 : VOPProfile <[i32, i32, i32, i32]>;

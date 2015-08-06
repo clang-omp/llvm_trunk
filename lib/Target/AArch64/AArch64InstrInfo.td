@@ -66,6 +66,20 @@ def SDT_AArch64CSel  : SDTypeProfile<1, 4,
                                     SDTCisSameAs<0, 2>,
                                     SDTCisInt<3>,
                                     SDTCisVT<4, i32>]>;
+def SDT_AArch64CCMP : SDTypeProfile<1, 5,
+                                    [SDTCisVT<0, i32>,
+                                     SDTCisInt<1>,
+                                     SDTCisSameAs<1, 2>,
+                                     SDTCisInt<3>,
+                                     SDTCisInt<4>,
+                                     SDTCisVT<5, i32>]>;
+def SDT_AArch64FCCMP : SDTypeProfile<1, 5,
+                                     [SDTCisVT<0, i32>,
+                                      SDTCisFP<1>,
+                                      SDTCisSameAs<1, 2>,
+                                      SDTCisInt<3>,
+                                      SDTCisInt<4>,
+                                      SDTCisVT<5, i32>]>;
 def SDT_AArch64FCmp   : SDTypeProfile<0, 2,
                                    [SDTCisFP<0>,
                                     SDTCisSameAs<0, 1>]>;
@@ -159,6 +173,10 @@ def AArch64and_flag  : SDNode<"AArch64ISD::ANDS",  SDTBinaryArithWithFlagsOut,
                             [SDNPCommutative]>;
 def AArch64adc_flag  : SDNode<"AArch64ISD::ADCS",  SDTBinaryArithWithFlagsInOut>;
 def AArch64sbc_flag  : SDNode<"AArch64ISD::SBCS",  SDTBinaryArithWithFlagsInOut>;
+
+def AArch64ccmp      : SDNode<"AArch64ISD::CCMP",  SDT_AArch64CCMP>;
+def AArch64ccmn      : SDNode<"AArch64ISD::CCMN",  SDT_AArch64CCMP>;
+def AArch64fccmp     : SDNode<"AArch64ISD::FCCMP", SDT_AArch64FCCMP>;
 
 def AArch64threadpointer : SDNode<"AArch64ISD::THREAD_POINTER", SDTPtrLeaf>;
 
@@ -595,10 +613,12 @@ def : Pat<(sub GPR32:$Rn, arith_shifted_reg32:$Rm),
           (SUBSWrs GPR32:$Rn, arith_shifted_reg32:$Rm)>;
 def : Pat<(sub GPR64:$Rn, arith_shifted_reg64:$Rm),
           (SUBSXrs GPR64:$Rn, arith_shifted_reg64:$Rm)>;
+let AddedComplexity = 1 in {
 def : Pat<(sub GPR32sp:$R2, arith_extended_reg32<i32>:$R3),
           (SUBSWrx GPR32sp:$R2, arith_extended_reg32<i32>:$R3)>;
 def : Pat<(sub GPR64sp:$R2, arith_extended_reg32to64<i64>:$R3),
           (SUBSXrx GPR64sp:$R2, arith_extended_reg32to64<i64>:$R3)>;
+}
 
 // Because of the immediate format for add/sub-imm instructions, the
 // expression (add x, -1) must be transformed to (SUB{W,X}ri x, 1).
@@ -823,7 +843,7 @@ defm AND  : LogicalReg<0b00, 0, "and", and>;
 defm BIC  : LogicalReg<0b00, 1, "bic",
                        BinOpFrag<(and node:$LHS, (not node:$RHS))>>;
 defm EON  : LogicalReg<0b10, 1, "eon",
-                       BinOpFrag<(xor node:$LHS, (not node:$RHS))>>;
+                       BinOpFrag<(not (xor node:$LHS, node:$RHS))>>;
 defm EOR  : LogicalReg<0b10, 0, "eor", xor>;
 defm ORN  : LogicalReg<0b01, 1, "orn",
                        BinOpFrag<(or node:$LHS, (not node:$RHS))>>;
@@ -893,6 +913,8 @@ def REVWr   : OneWRegData<0b010, "rev", bswap>;
 def REVXr   : OneXRegData<0b011, "rev", bswap>;
 def REV32Xr : OneXRegData<0b010, "rev32",
                                  UnOpFrag<(rotr (bswap node:$LHS), (i64 32))>>;
+
+def : InstAlias<"rev64 $Rd, $Rn", (REVXr GPR64:$Rd, GPR64:$Rn), 0>;
 
 // The bswap commutes with the rotr so we want a pattern for both possible
 // orders.
@@ -1018,13 +1040,10 @@ def : InstAlias<"uxth $dst, $src", (UBFMXri GPR64:$dst, GPR64:$src, 0, 15)>;
 def : InstAlias<"uxtw $dst, $src", (UBFMXri GPR64:$dst, GPR64:$src, 0, 31)>;
 
 //===----------------------------------------------------------------------===//
-// Conditionally set flags instructions.
+// Conditional comparison instructions.
 //===----------------------------------------------------------------------===//
-defm CCMN : CondSetFlagsImm<0, "ccmn">;
-defm CCMP : CondSetFlagsImm<1, "ccmp">;
-
-defm CCMN : CondSetFlagsReg<0, "ccmn">;
-defm CCMP : CondSetFlagsReg<1, "ccmp">;
+defm CCMN : CondComparison<0, "ccmn", AArch64ccmn>;
+defm CCMP : CondComparison<1, "ccmp", AArch64ccmp>;
 
 //===----------------------------------------------------------------------===//
 // Conditional select instructions.
@@ -2554,7 +2573,7 @@ defm FCMP  : FPComparison<0, "fcmp", AArch64fcmp>;
 //===----------------------------------------------------------------------===//
 
 defm FCCMPE : FPCondComparison<1, "fccmpe">;
-defm FCCMP  : FPCondComparison<0, "fccmp">;
+defm FCCMP  : FPCondComparison<0, "fccmp", AArch64fccmp>;
 
 //===----------------------------------------------------------------------===//
 // Floating point conditional select instruction.
@@ -2826,8 +2845,8 @@ defm MLS      : SIMDThreeSameVectorBHSTied<1, 0b10010, "mls",
 defm MUL      : SIMDThreeSameVectorBHS<0, 0b10011, "mul", mul>;
 defm PMUL     : SIMDThreeSameVectorB<1, 0b10011, "pmul", int_aarch64_neon_pmul>;
 defm SABA     : SIMDThreeSameVectorBHSTied<0, 0b01111, "saba",
-      TriOpFrag<(add node:$LHS, (int_aarch64_neon_sabd node:$MHS, node:$RHS))> >;
-defm SABD     : SIMDThreeSameVectorBHS<0,0b01110,"sabd", int_aarch64_neon_sabd>;
+      TriOpFrag<(add node:$LHS, (sabsdiff node:$MHS, node:$RHS))> >;
+defm SABD     : SIMDThreeSameVectorBHS<0,0b01110,"sabd", sabsdiff>;
 defm SHADD    : SIMDThreeSameVectorBHS<0,0b00000,"shadd", int_aarch64_neon_shadd>;
 defm SHSUB    : SIMDThreeSameVectorBHS<0,0b00100,"shsub", int_aarch64_neon_shsub>;
 defm SMAXP    : SIMDThreeSameVectorBHS<0,0b10100,"smaxp", int_aarch64_neon_smaxp>;
@@ -2845,8 +2864,8 @@ defm SRSHL    : SIMDThreeSameVector<0,0b01010,"srshl", int_aarch64_neon_srshl>;
 defm SSHL     : SIMDThreeSameVector<0,0b01000,"sshl", int_aarch64_neon_sshl>;
 defm SUB      : SIMDThreeSameVector<1,0b10000,"sub", sub>;
 defm UABA     : SIMDThreeSameVectorBHSTied<1, 0b01111, "uaba",
-      TriOpFrag<(add node:$LHS, (int_aarch64_neon_uabd node:$MHS, node:$RHS))> >;
-defm UABD     : SIMDThreeSameVectorBHS<1,0b01110,"uabd", int_aarch64_neon_uabd>;
+      TriOpFrag<(add node:$LHS, (uabsdiff node:$MHS, node:$RHS))> >;
+defm UABD     : SIMDThreeSameVectorBHS<1,0b01110,"uabd", uabsdiff>;
 defm UHADD    : SIMDThreeSameVectorBHS<1,0b00000,"uhadd", int_aarch64_neon_uhadd>;
 defm UHSUB    : SIMDThreeSameVectorBHS<1,0b00100,"uhsub", int_aarch64_neon_uhsub>;
 defm UMAXP    : SIMDThreeSameVectorBHS<1,0b10100,"umaxp", int_aarch64_neon_umaxp>;
@@ -3196,25 +3215,25 @@ defm CMGE   : SIMDCmpTwoScalarD< 1, 0b01000, "cmge", AArch64cmgez>;
 defm CMGT   : SIMDCmpTwoScalarD< 0, 0b01000, "cmgt", AArch64cmgtz>;
 defm CMLE   : SIMDCmpTwoScalarD< 1, 0b01001, "cmle", AArch64cmlez>;
 defm CMLT   : SIMDCmpTwoScalarD< 0, 0b01010, "cmlt", AArch64cmltz>;
-defm FCMEQ  : SIMDCmpTwoScalarSD<0, 1, 0b01101, "fcmeq", AArch64fcmeqz>;
-defm FCMGE  : SIMDCmpTwoScalarSD<1, 1, 0b01100, "fcmge", AArch64fcmgez>;
-defm FCMGT  : SIMDCmpTwoScalarSD<0, 1, 0b01100, "fcmgt", AArch64fcmgtz>;
-defm FCMLE  : SIMDCmpTwoScalarSD<1, 1, 0b01101, "fcmle", AArch64fcmlez>;
-defm FCMLT  : SIMDCmpTwoScalarSD<0, 1, 0b01110, "fcmlt", AArch64fcmltz>;
-defm FCVTAS : SIMDTwoScalarSD<   0, 0, 0b11100, "fcvtas">;
-defm FCVTAU : SIMDTwoScalarSD<   1, 0, 0b11100, "fcvtau">;
-defm FCVTMS : SIMDTwoScalarSD<   0, 0, 0b11011, "fcvtms">;
-defm FCVTMU : SIMDTwoScalarSD<   1, 0, 0b11011, "fcvtmu">;
-defm FCVTNS : SIMDTwoScalarSD<   0, 0, 0b11010, "fcvtns">;
-defm FCVTNU : SIMDTwoScalarSD<   1, 0, 0b11010, "fcvtnu">;
-defm FCVTPS : SIMDTwoScalarSD<   0, 1, 0b11010, "fcvtps">;
-defm FCVTPU : SIMDTwoScalarSD<   1, 1, 0b11010, "fcvtpu">;
+defm FCMEQ  : SIMDFPCmpTwoScalar<0, 1, 0b01101, "fcmeq", AArch64fcmeqz>;
+defm FCMGE  : SIMDFPCmpTwoScalar<1, 1, 0b01100, "fcmge", AArch64fcmgez>;
+defm FCMGT  : SIMDFPCmpTwoScalar<0, 1, 0b01100, "fcmgt", AArch64fcmgtz>;
+defm FCMLE  : SIMDFPCmpTwoScalar<1, 1, 0b01101, "fcmle", AArch64fcmlez>;
+defm FCMLT  : SIMDFPCmpTwoScalar<0, 1, 0b01110, "fcmlt", AArch64fcmltz>;
+defm FCVTAS : SIMDFPTwoScalar<   0, 0, 0b11100, "fcvtas">;
+defm FCVTAU : SIMDFPTwoScalar<   1, 0, 0b11100, "fcvtau">;
+defm FCVTMS : SIMDFPTwoScalar<   0, 0, 0b11011, "fcvtms">;
+defm FCVTMU : SIMDFPTwoScalar<   1, 0, 0b11011, "fcvtmu">;
+defm FCVTNS : SIMDFPTwoScalar<   0, 0, 0b11010, "fcvtns">;
+defm FCVTNU : SIMDFPTwoScalar<   1, 0, 0b11010, "fcvtnu">;
+defm FCVTPS : SIMDFPTwoScalar<   0, 1, 0b11010, "fcvtps">;
+defm FCVTPU : SIMDFPTwoScalar<   1, 1, 0b11010, "fcvtpu">;
 def  FCVTXNv1i64 : SIMDInexactCvtTwoScalar<0b10110, "fcvtxn">;
-defm FCVTZS : SIMDTwoScalarSD<   0, 1, 0b11011, "fcvtzs">;
-defm FCVTZU : SIMDTwoScalarSD<   1, 1, 0b11011, "fcvtzu">;
-defm FRECPE : SIMDTwoScalarSD<   0, 1, 0b11101, "frecpe">;
-defm FRECPX : SIMDTwoScalarSD<   0, 1, 0b11111, "frecpx">;
-defm FRSQRTE : SIMDTwoScalarSD<  1, 1, 0b11101, "frsqrte">;
+defm FCVTZS : SIMDFPTwoScalar<   0, 1, 0b11011, "fcvtzs">;
+defm FCVTZU : SIMDFPTwoScalar<   1, 1, 0b11011, "fcvtzu">;
+defm FRECPE : SIMDFPTwoScalar<   0, 1, 0b11101, "frecpe">;
+defm FRECPX : SIMDFPTwoScalar<   0, 1, 0b11111, "frecpx">;
+defm FRSQRTE : SIMDFPTwoScalar<  1, 1, 0b11101, "frsqrte">;
 defm NEG    : SIMDTwoScalarD<    1, 0b01011, "neg",
                                  UnOpFrag<(sub immAllZerosV, node:$LHS)> >;
 defm SCVTF  : SIMDTwoScalarCVTSD<   0, 0, 0b11101, "scvtf", AArch64sitof>;
@@ -3364,9 +3383,9 @@ defm RADDHN : SIMDNarrowThreeVectorBHS<1,0b0100,"raddhn",int_aarch64_neon_raddhn
 defm RSUBHN : SIMDNarrowThreeVectorBHS<1,0b0110,"rsubhn",int_aarch64_neon_rsubhn>;
 defm PMULL  : SIMDDifferentThreeVectorBD<0,0b1110,"pmull",int_aarch64_neon_pmull>;
 defm SABAL  : SIMDLongThreeVectorTiedBHSabal<0,0b0101,"sabal",
-                                             int_aarch64_neon_sabd>;
+                                             sabsdiff>;
 defm SABDL   : SIMDLongThreeVectorBHSabdl<0, 0b0111, "sabdl",
-                                          int_aarch64_neon_sabd>;
+                                          sabsdiff>;
 defm SADDL   : SIMDLongThreeVectorBHS<   0, 0b0000, "saddl",
             BinOpFrag<(add (sext node:$LHS), (sext node:$RHS))>>;
 defm SADDW   : SIMDWideThreeVectorBHS<   0, 0b0001, "saddw",
@@ -3387,9 +3406,9 @@ defm SSUBL   : SIMDLongThreeVectorBHS<0, 0b0010, "ssubl",
 defm SSUBW   : SIMDWideThreeVectorBHS<0, 0b0011, "ssubw",
                  BinOpFrag<(sub node:$LHS, (sext node:$RHS))>>;
 defm UABAL   : SIMDLongThreeVectorTiedBHSabal<1, 0b0101, "uabal",
-                                              int_aarch64_neon_uabd>;
+                                              uabsdiff>;
 defm UABDL   : SIMDLongThreeVectorBHSabdl<1, 0b0111, "uabdl",
-                                          int_aarch64_neon_uabd>;
+                                          uabsdiff>;
 defm UADDL   : SIMDLongThreeVectorBHS<1, 0b0000, "uaddl",
                  BinOpFrag<(add (zext node:$LHS), (zext node:$RHS))>>;
 defm UADDW   : SIMDWideThreeVectorBHS<1, 0b0001, "uaddw",
@@ -3591,11 +3610,11 @@ defm CPY : SIMDScalarCPY<"cpy">;
 //----------------------------------------------------------------------------
 
 defm ADDP    : SIMDPairwiseScalarD<0, 0b11011, "addp">;
-defm FADDP   : SIMDPairwiseScalarSD<1, 0, 0b01101, "faddp">;
-defm FMAXNMP : SIMDPairwiseScalarSD<1, 0, 0b01100, "fmaxnmp">;
-defm FMAXP   : SIMDPairwiseScalarSD<1, 0, 0b01111, "fmaxp">;
-defm FMINNMP : SIMDPairwiseScalarSD<1, 1, 0b01100, "fminnmp">;
-defm FMINP   : SIMDPairwiseScalarSD<1, 1, 0b01111, "fminp">;
+defm FADDP   : SIMDFPPairwiseScalar<1, 0, 0b01101, "faddp">;
+defm FMAXNMP : SIMDFPPairwiseScalar<1, 0, 0b01100, "fmaxnmp">;
+defm FMAXP   : SIMDFPPairwiseScalar<1, 0, 0b01111, "fmaxp">;
+defm FMINNMP : SIMDFPPairwiseScalar<1, 1, 0b01100, "fminnmp">;
+defm FMINP   : SIMDFPPairwiseScalar<1, 1, 0b01111, "fminp">;
 def : Pat<(v2i64 (AArch64saddv V128:$Rn)),
           (INSERT_SUBREG (v2i64 (IMPLICIT_DEF)), (ADDPv2i64p V128:$Rn), dsub)>;
 def : Pat<(v2i64 (AArch64uaddv V128:$Rn)),
@@ -4338,8 +4357,8 @@ def MVNIv4s_msl   : SIMDModifiedImmMoveMSL<1, 1, {1,1,0,?}, V128, "mvni", ".4s",
 //----------------------------------------------------------------------------
 
 let hasSideEffects = 0 in {
-  defm FMLA  : SIMDFPIndexedSDTied<0, 0b0001, "fmla">;
-  defm FMLS  : SIMDFPIndexedSDTied<0, 0b0101, "fmls">;
+  defm FMLA  : SIMDFPIndexedTied<0, 0b0001, "fmla">;
+  defm FMLS  : SIMDFPIndexedTied<0, 0b0101, "fmls">;
 }
 
 // NOTE: Operands are reordered in the FMLA/FMLS PatFrags because the
@@ -4347,18 +4366,18 @@ let hasSideEffects = 0 in {
 
 // On the other hand, there are quite a few valid combinatorial options due to
 // the commutativity of multiplication and the fact that (-x) * y = x * (-y).
-defm : SIMDFPIndexedSDTiedPatterns<"FMLA",
+defm : SIMDFPIndexedTiedPatterns<"FMLA",
            TriOpFrag<(fma node:$RHS, node:$MHS, node:$LHS)>>;
-defm : SIMDFPIndexedSDTiedPatterns<"FMLA",
+defm : SIMDFPIndexedTiedPatterns<"FMLA",
            TriOpFrag<(fma node:$MHS, node:$RHS, node:$LHS)>>;
 
-defm : SIMDFPIndexedSDTiedPatterns<"FMLS",
+defm : SIMDFPIndexedTiedPatterns<"FMLS",
            TriOpFrag<(fma node:$MHS, (fneg node:$RHS), node:$LHS)> >;
-defm : SIMDFPIndexedSDTiedPatterns<"FMLS",
+defm : SIMDFPIndexedTiedPatterns<"FMLS",
            TriOpFrag<(fma node:$RHS, (fneg node:$MHS), node:$LHS)> >;
-defm : SIMDFPIndexedSDTiedPatterns<"FMLS",
+defm : SIMDFPIndexedTiedPatterns<"FMLS",
            TriOpFrag<(fma (fneg node:$RHS), node:$MHS, node:$LHS)> >;
-defm : SIMDFPIndexedSDTiedPatterns<"FMLS",
+defm : SIMDFPIndexedTiedPatterns<"FMLS",
            TriOpFrag<(fma (fneg node:$MHS), node:$RHS, node:$LHS)> >;
 
 multiclass FMLSIndexedAfterNegPatterns<SDPatternOperator OpNode> {
@@ -4440,8 +4459,8 @@ defm : FMLSIndexedAfterNegPatterns<
 defm : FMLSIndexedAfterNegPatterns<
            TriOpFrag<(fma node:$MHS, node:$RHS, node:$LHS)> >;
 
-defm FMULX : SIMDFPIndexedSD<1, 0b1001, "fmulx", int_aarch64_neon_fmulx>;
-defm FMUL  : SIMDFPIndexedSD<0, 0b1001, "fmul", fmul>;
+defm FMULX : SIMDFPIndexed<1, 0b1001, "fmulx", int_aarch64_neon_fmulx>;
+defm FMUL  : SIMDFPIndexed<0, 0b1001, "fmul", fmul>;
 
 def : Pat<(v2f32 (fmul V64:$Rn, (AArch64dup (f32 FPR32:$Rm)))),
           (FMULv2i32_indexed V64:$Rn,
@@ -5131,10 +5150,10 @@ def : Pat<(i64 (zext def32:$src)), (SUBREG_TO_REG (i64 0), GPR32:$src, sub_32)>;
 def : Pat<(i64 (anyext GPR32:$src)),
           (INSERT_SUBREG (i64 (IMPLICIT_DEF)), GPR32:$src, sub_32)>;
 
-// When we need to explicitly zero-extend, we use an unsigned bitfield move
-// instruction (UBFM) on the enclosing super-reg.
+// When we need to explicitly zero-extend, we use a 32-bit MOV instruction and
+// then assert the extension has happened.
 def : Pat<(i64 (zext GPR32:$src)),
- (UBFMXri (INSERT_SUBREG (i64 (IMPLICIT_DEF)), GPR32:$src, sub_32), 0, 31)>;
+          (SUBREG_TO_REG (i32 0), (ORRWrs WZR, GPR32:$src, 0), sub_32)>;
 
 // To sign extend, we use a signed bitfield move instruction (SBFM) on the
 // containing super-reg.

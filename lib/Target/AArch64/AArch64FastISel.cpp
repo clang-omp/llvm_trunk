@@ -523,7 +523,7 @@ bool AArch64FastISel::computeAddress(const Value *Obj, Address &Addr, Type *Ty)
     U = C;
   }
 
-  if (const PointerType *Ty = dyn_cast<PointerType>(Obj->getType()))
+  if (auto *Ty = dyn_cast<PointerType>(Obj->getType()))
     if (Ty->getAddressSpace() > 255)
       // Fast instruction selection doesn't support the special
       // address spaces.
@@ -2447,8 +2447,8 @@ bool AArch64FastISel::selectIndirectBr(const Instruction *I) {
   BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, II).addReg(AddrReg);
 
   // Make sure the CFG is up-to-date.
-  for (unsigned i = 0, e = BI->getNumSuccessors(); i != e; ++i)
-    FuncInfo.MBB->addSuccessor(FuncInfo.MBBMap[BI->getSuccessor(i)]);
+  for (auto *Succ : BI->successors())
+    FuncInfo.MBB->addSuccessor(FuncInfo.MBBMap[Succ]);
 
   return true;
 }
@@ -2954,8 +2954,7 @@ bool AArch64FastISel::processCallArgs(CallLoweringInfo &CLI,
     .addImm(NumBytes);
 
   // Process the args.
-  for (unsigned i = 0, e = ArgLocs.size(); i != e; ++i) {
-    CCValAssign &VA = ArgLocs[i];
+  for (CCValAssign &VA : ArgLocs) {
     const Value *ArgVal = CLI.OutVals[VA.getValNo()];
     MVT ArgVT = OutVTs[VA.getValNo()];
 
@@ -3763,8 +3762,8 @@ bool AArch64FastISel::selectRet(const Instruction *I) {
 
   MachineInstrBuilder MIB = BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
                                     TII.get(AArch64::RET_ReallyLR));
-  for (unsigned i = 0, e = RetRegs.size(); i != e; ++i)
-    MIB.addReg(RetRegs[i], RegState::Implicit);
+  for (unsigned RetReg : RetRegs)
+    MIB.addReg(RetReg, RegState::Implicit);
   return true;
 }
 
@@ -3795,40 +3794,33 @@ bool AArch64FastISel::selectTrunc(const Instruction *I) {
     return false;
   bool SrcIsKill = hasTrivialKill(Op);
 
-  // If we're truncating from i64 to a smaller non-legal type then generate an
-  // AND. Otherwise, we know the high bits are undefined and a truncate only
-  // generate a COPY. We cannot mark the source register also as result
-  // register, because this can incorrectly transfer the kill flag onto the
-  // source register.
-  unsigned ResultReg;
-  if (SrcVT == MVT::i64) {
-    uint64_t Mask = 0;
-    switch (DestVT.SimpleTy) {
-    default:
-      // Trunc i64 to i32 is handled by the target-independent fast-isel.
-      return false;
-    case MVT::i1:
-      Mask = 0x1;
-      break;
-    case MVT::i8:
-      Mask = 0xff;
-      break;
-    case MVT::i16:
-      Mask = 0xffff;
-      break;
-    }
-    // Issue an extract_subreg to get the lower 32-bits.
-    unsigned Reg32 = fastEmitInst_extractsubreg(MVT::i32, SrcReg, SrcIsKill,
-                                                AArch64::sub_32);
-    // Create the AND instruction which performs the actual truncation.
-    ResultReg = emitAnd_ri(MVT::i32, Reg32, /*IsKill=*/true, Mask);
-    assert(ResultReg && "Unexpected AND instruction emission failure.");
-  } else {
-    ResultReg = createResultReg(&AArch64::GPR32RegClass);
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
-            TII.get(TargetOpcode::COPY), ResultReg)
-        .addReg(SrcReg, getKillRegState(SrcIsKill));
+  // If we're truncating from i64/i32 to a smaller non-legal type then generate
+  // an AND.
+  uint64_t Mask = 0;
+  switch (DestVT.SimpleTy) {
+  default:
+    // Trunc i64 to i32 is handled by the target-independent fast-isel.
+    return false;
+  case MVT::i1:
+    Mask = 0x1;
+    break;
+  case MVT::i8:
+    Mask = 0xff;
+    break;
+  case MVT::i16:
+    Mask = 0xffff;
+    break;
   }
+  if (SrcVT == MVT::i64) {
+    // Issue an extract_subreg to get the lower 32-bits.
+    SrcReg = fastEmitInst_extractsubreg(MVT::i32, SrcReg, SrcIsKill,
+                                        AArch64::sub_32);
+    SrcIsKill = true;
+  }
+
+  // Create the AND instruction which performs the actual truncation.
+  unsigned ResultReg = emitAnd_ri(MVT::i32, SrcReg, SrcIsKill, Mask);
+  assert(ResultReg && "Unexpected AND instruction emission failure.");
 
   updateValueMap(I, ResultReg);
   return true;

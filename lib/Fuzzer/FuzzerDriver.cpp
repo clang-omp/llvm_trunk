@@ -202,7 +202,8 @@ int ApplyTokens(const Fuzzer &F, const char *InputFilePath) {
 }
 
 int FuzzerDriver(int argc, char **argv, UserCallback Callback) {
-  SimpleUserSuppliedFuzzer SUSF(Callback);
+  FuzzerRandomLibc Rand(0);
+  SimpleUserSuppliedFuzzer SUSF(&Rand, Callback);
   return FuzzerDriver(argc, argv, SUSF);
 }
 
@@ -246,6 +247,7 @@ int FuzzerDriver(int argc, char **argv, UserSuppliedFuzzer &USF) {
   if (Flags.sync_command)
     Options.SyncCommand = Flags.sync_command;
   Options.SyncTimeout = Flags.sync_timeout;
+  Options.ReportSlowUnits = Flags.report_slow_units;
   Fuzzer F(USF, Options);
 
   if (Flags.apply_tokens)
@@ -257,7 +259,7 @@ int FuzzerDriver(int argc, char **argv, UserSuppliedFuzzer &USF) {
     Seed = time(0) * 10000 + getpid();
   if (Flags.verbosity)
     Printf("Seed: %u\n", Seed);
-  srand(Seed);
+  USF.GetRand().ResetSeed(Seed);
 
   // Timer
   if (Flags.timeout > 0)

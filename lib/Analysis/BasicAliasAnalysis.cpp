@@ -16,6 +16,7 @@
 #include "llvm/Analysis/Passes.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/CFG.h"
@@ -41,6 +42,18 @@
 #include "llvm/Support/ErrorHandling.h"
 #include <algorithm>
 using namespace llvm;
+
+/// Enable analysis of recursive PHI nodes.
+static cl::opt<bool> EnableRecPhiAnalysis("basicaa-recphi",
+                                          cl::Hidden, cl::init(false));
+
+/// SearchLimitReached / SearchTimes shows how often the limit of
+/// to decompose GEPs is reached. It will affect the precision
+/// of basic alias analysis.
+#define DEBUG_TYPE "basicaa"
+STATISTIC(SearchLimitReached, "Number of times the limit to "
+                              "decompose GEPs is reached");
+STATISTIC(SearchTimes, "Number of times a GEP is decomposed");
 
 /// Cutoff after which to stop analysing a set of phi nodes potentially involved
 /// in a cycle. Because we are analysing 'through' phi nodes we need to be
@@ -162,26 +175,20 @@ static bool isObjectSize(const Value *V, uint64_t Size,
 //===----------------------------------------------------------------------===//
 
 namespace {
+  enum ExtensionKind {
+    EK_NotExtended,
+    EK_SignExt,
+    EK_ZeroExt
+  };
 
-// A linear transformation of a Value; this class represents ZExt(SExt(V,
-// SExtBits), ZExtBits) * Scale + Offset.
   struct VariableGEPIndex {
-
-    // An opaque Value - we can't decompose this further.
     const Value *V;
-
-    // We need to track what extensions we've done as we consider the same Value
-    // with different extensions as different variables in a GEP's linear
-    // expression;
-    // e.g.: if V == -1, then sext(x) != zext(x).
-    unsigned ZExtBits;
-    unsigned SExtBits;
-
+    ExtensionKind Extension;
     int64_t Scale;
 
     bool operator==(const VariableGEPIndex &Other) const {
-      return V == Other.V && ZExtBits == Other.ZExtBits &&
-             SExtBits == Other.SExtBits && Scale == Other.Scale;
+      return V == Other.V && Extension == Other.Extension &&
+        Scale == Other.Scale;
     }
 
     bool operator!=(const VariableGEPIndex &Other) const {
@@ -199,12 +206,10 @@ namespace {
 ///
 /// Note that this looks through extends, so the high bits may not be
 /// represented in the result.
-static const Value *GetLinearExpression(const Value *V, APInt &Scale,
-                                        APInt &Offset, unsigned &ZExtBits,
-                                        unsigned &SExtBits,
-                                        const DataLayout &DL, unsigned Depth,
-                                        AssumptionCache *AC, DominatorTree *DT,
-                                        bool &NSW, bool &NUW) {
+static Value *GetLinearExpression(Value *V, APInt &Scale, APInt &Offset,
+                                  ExtensionKind &Extension,
+                                  const DataLayout &DL, unsigned Depth,
+                                  AssumptionCache *AC, DominatorTree *DT) {
   assert(V->getType()->isIntegerTy() && "Not an integer value");
 
   // Limit our recursion depth.
@@ -214,32 +219,18 @@ static const Value *GetLinearExpression(const Value *V, APInt &Scale,
     return V;
   }
 
-  if (const ConstantInt *Const = dyn_cast<ConstantInt>(V)) {
-    // if it's a constant, just convert it to an offset and remove the variable.
-    // If we've been called recursively the Offset bit width will be greater
-    // than the constant's (the Offset's always as wide as the outermost call),
-    // so we'll zext here and process any extension in the isa<SExtInst> &
-    // isa<ZExtInst> cases below.
-    Offset += Const->getValue().zextOrSelf(Offset.getBitWidth());
+  if (ConstantInt *Const = dyn_cast<ConstantInt>(V)) {
+    // if it's a constant, just convert it to an offset
+    // and remove the variable.
+    Offset += Const->getValue();
     assert(Scale == 0 && "Constant values don't have a scale");
     return V;
   }
 
-  if (const BinaryOperator *BOp = dyn_cast<BinaryOperator>(V)) {
+  if (BinaryOperator *BOp = dyn_cast<BinaryOperator>(V)) {
     if (ConstantInt *RHSC = dyn_cast<ConstantInt>(BOp->getOperand(1))) {
-
-      // If we've been called recursively then Offset and Scale will be wider
-      // that the BOp operands. We'll always zext it here as we'll process sign
-      // extensions below (see the isa<SExtInst> / isa<ZExtInst> cases).
-      APInt RHS = RHSC->getValue().zextOrSelf(Offset.getBitWidth());
-
       switch (BOp->getOpcode()) {
-      default:
-        // We don't understand this instruction, so we can't decompose it any
-        // further.
-        Scale = 1;
-        Offset = 0;
-        return V;
+      default: break;
       case Instruction::Or:
         // X|C == X+C if all the bits in C are unset in X.  Otherwise we can't
         // analyze it.
@@ -248,88 +239,45 @@ static const Value *GetLinearExpression(const Value *V, APInt &Scale,
           break;
         // FALL THROUGH.
       case Instruction::Add:
-        V = GetLinearExpression(BOp->getOperand(0), Scale, Offset, ZExtBits,
-                                SExtBits, DL, Depth + 1, AC, DT, NSW, NUW);
-        Offset += RHS;
-        break;
-      case Instruction::Sub:
-        V = GetLinearExpression(BOp->getOperand(0), Scale, Offset, ZExtBits,
-                                SExtBits, DL, Depth + 1, AC, DT, NSW, NUW);
-        Offset -= RHS;
-        break;
+        V = GetLinearExpression(BOp->getOperand(0), Scale, Offset, Extension,
+                                DL, Depth + 1, AC, DT);
+        Offset += RHSC->getValue();
+        return V;
       case Instruction::Mul:
-        V = GetLinearExpression(BOp->getOperand(0), Scale, Offset, ZExtBits,
-                                SExtBits, DL, Depth + 1, AC, DT, NSW, NUW);
-        Offset *= RHS;
-        Scale *= RHS;
-        break;
+        V = GetLinearExpression(BOp->getOperand(0), Scale, Offset, Extension,
+                                DL, Depth + 1, AC, DT);
+        Offset *= RHSC->getValue();
+        Scale *= RHSC->getValue();
+        return V;
       case Instruction::Shl:
-        V = GetLinearExpression(BOp->getOperand(0), Scale, Offset, ZExtBits,
-                                SExtBits, DL, Depth + 1, AC, DT, NSW, NUW);
-        Offset <<= RHS.getLimitedValue();
-        Scale <<= RHS.getLimitedValue();
-        // the semantics of nsw and nuw for left shifts don't match those of
-        // multiplications, so we won't propagate them.
-        NSW = NUW = false;
+        V = GetLinearExpression(BOp->getOperand(0), Scale, Offset, Extension,
+                                DL, Depth + 1, AC, DT);
+        Offset <<= RHSC->getValue().getLimitedValue();
+        Scale <<= RHSC->getValue().getLimitedValue();
         return V;
       }
-
-      if (isa<OverflowingBinaryOperator>(BOp)) {
-        NUW &= BOp->hasNoUnsignedWrap();
-        NSW &= BOp->hasNoSignedWrap();
-      }
-      return V;
     }
   }
 
   // Since GEP indices are sign extended anyway, we don't care about the high
   // bits of a sign or zero extended value - just scales and offsets.  The
   // extensions have to be consistent though.
-  if (isa<SExtInst>(V) || isa<ZExtInst>(V)) {
+  if ((isa<SExtInst>(V) && Extension != EK_ZeroExt) ||
+      (isa<ZExtInst>(V) && Extension != EK_SignExt)) {
     Value *CastOp = cast<CastInst>(V)->getOperand(0);
-    unsigned NewWidth = V->getType()->getPrimitiveSizeInBits();
+    unsigned OldWidth = Scale.getBitWidth();
     unsigned SmallWidth = CastOp->getType()->getPrimitiveSizeInBits();
-    unsigned OldZExtBits = ZExtBits, OldSExtBits = SExtBits;
-    const Value *Result =
-        GetLinearExpression(CastOp, Scale, Offset, ZExtBits, SExtBits, DL,
-                            Depth + 1, AC, DT, NSW, NUW);
+    Scale = Scale.trunc(SmallWidth);
+    Offset = Offset.trunc(SmallWidth);
+    Extension = isa<SExtInst>(V) ? EK_SignExt : EK_ZeroExt;
 
-    // zext(zext(%x)) == zext(%x), and similiarly for sext; we'll handle this
-    // by just incrementing the number of bits we've extended by.
-    unsigned ExtendedBy = NewWidth - SmallWidth;
+    Value *Result = GetLinearExpression(CastOp, Scale, Offset, Extension, DL,
+                                        Depth + 1, AC, DT);
+    Scale = Scale.zext(OldWidth);
 
-    if (isa<SExtInst>(V) && ZExtBits == 0) {
-      // sext(sext(%x, a), b) == sext(%x, a + b)
-
-      if (NSW) {
-        // We haven't sign-wrapped, so it's valid to decompose sext(%x + c)
-        // into sext(%x) + sext(c). We'll sext the Offset ourselves:
-        unsigned OldWidth = Offset.getBitWidth();
-        Offset = Offset.trunc(SmallWidth).sext(NewWidth).zextOrSelf(OldWidth);
-      } else {
-        // We may have signed-wrapped, so don't decompose sext(%x + c) into
-        // sext(%x) + sext(c)
-        Scale = 1;
-        Offset = 0;
-        Result = CastOp;
-        ZExtBits = OldZExtBits;
-        SExtBits = OldSExtBits;
-      }
-      SExtBits += ExtendedBy;
-    } else {
-      // sext(zext(%x, a), b) = zext(zext(%x, a), b) = zext(%x, a + b)
-
-      if (!NUW) {
-        // We may have unsigned-wrapped, so don't decompose zext(%x + c) into
-        // zext(%x) + zext(c)
-        Scale = 1;
-        Offset = 0;
-        Result = CastOp;
-        ZExtBits = OldZExtBits;
-        SExtBits = OldSExtBits;
-      }
-      ZExtBits += ExtendedBy;
-    }
+    // We have to sign-extend even if Extension == EK_ZeroExt as we can't
+    // decompose a sign extension (i.e. zext(x - 1) != zext(x) - zext(-1)).
+    Offset = Offset.sext(OldWidth);
 
     return Result;
   }
@@ -362,6 +310,7 @@ DecomposeGEPExpression(const Value *V, int64_t &BaseOffs,
   // Limit recursion depth to limit compile time in crazy cases.
   unsigned MaxLookup = MaxLookupSearchDepth;
   MaxLookupReached = false;
+  SearchTimes++;
 
   BaseOffs = 0;
   do {
@@ -411,7 +360,7 @@ DecomposeGEPExpression(const Value *V, int64_t &BaseOffs,
     gep_type_iterator GTI = gep_type_begin(GEPOp);
     for (User::const_op_iterator I = GEPOp->op_begin()+1,
          E = GEPOp->op_end(); I != E; ++I) {
-      const Value *Index = *I;
+      Value *Index = *I;
       // Compute the (potentially symbolic) offset in bytes for this index.
       if (StructType *STy = dyn_cast<StructType>(*GTI++)) {
         // For a struct, add the member offset.
@@ -423,27 +372,25 @@ DecomposeGEPExpression(const Value *V, int64_t &BaseOffs,
       }
 
       // For an array/pointer, add the element offset, explicitly scaled.
-      if (const ConstantInt *CIdx = dyn_cast<ConstantInt>(Index)) {
+      if (ConstantInt *CIdx = dyn_cast<ConstantInt>(Index)) {
         if (CIdx->isZero()) continue;
         BaseOffs += DL.getTypeAllocSize(*GTI) * CIdx->getSExtValue();
         continue;
       }
 
       uint64_t Scale = DL.getTypeAllocSize(*GTI);
-      unsigned ZExtBits = 0, SExtBits = 0;
+      ExtensionKind Extension = EK_NotExtended;
 
       // If the integer type is smaller than the pointer size, it is implicitly
       // sign extended to pointer size.
       unsigned Width = Index->getType()->getIntegerBitWidth();
-      unsigned PointerSize = DL.getPointerSizeInBits(AS);
-      if (PointerSize > Width)
-        SExtBits += PointerSize - Width;
+      if (DL.getPointerSizeInBits(AS) > Width)
+        Extension = EK_SignExt;
 
       // Use GetLinearExpression to decompose the index into a C1*V+C2 form.
       APInt IndexScale(Width, 0), IndexOffset(Width, 0);
-      bool NSW = true, NUW = true;
-      Index = GetLinearExpression(Index, IndexScale, IndexOffset, ZExtBits,
-                                  SExtBits, DL, 0, AC, DT, NSW, NUW);
+      Index = GetLinearExpression(Index, IndexScale, IndexOffset, Extension, DL,
+                                  0, AC, DT);
 
       // The GEP index scale ("Scale") scales C1*V+C2, yielding (C1*V+C2)*Scale.
       // This gives us an aggregate computation of (C1*Scale)*V + C2*Scale.
@@ -455,8 +402,8 @@ DecomposeGEPExpression(const Value *V, int64_t &BaseOffs,
       //   A[x][x] -> x*16 + x*4 -> x*20
       // This also ensures that 'x' only appears in the index list once.
       for (unsigned i = 0, e = VarIndices.size(); i != e; ++i) {
-        if (VarIndices[i].V == Index && VarIndices[i].ZExtBits == ZExtBits &&
-            VarIndices[i].SExtBits == SExtBits) {
+        if (VarIndices[i].V == Index &&
+            VarIndices[i].Extension == Extension) {
           Scale += VarIndices[i].Scale;
           VarIndices.erase(VarIndices.begin()+i);
           break;
@@ -465,13 +412,13 @@ DecomposeGEPExpression(const Value *V, int64_t &BaseOffs,
 
       // Make sure that we have a scale that makes sense for this target's
       // pointer size.
-      if (unsigned ShiftBits = 64 - PointerSize) {
+      if (unsigned ShiftBits = 64 - DL.getPointerSizeInBits(AS)) {
         Scale <<= ShiftBits;
         Scale = (int64_t)Scale >> ShiftBits;
       }
 
       if (Scale) {
-        VariableGEPIndex Entry = {Index, ZExtBits, SExtBits,
+        VariableGEPIndex Entry = {Index, Extension,
                                   static_cast<int64_t>(Scale)};
         VarIndices.push_back(Entry);
       }
@@ -483,6 +430,7 @@ DecomposeGEPExpression(const Value *V, int64_t &BaseOffs,
 
   // If the chain of expressions is too deep, just return early.
   MaxLookupReached = true;
+  SearchLimitReached++;
   return V;
 }
 
@@ -542,11 +490,11 @@ namespace {
       return Alias;
     }
 
-    ModRefResult getModRefInfo(ImmutableCallSite CS,
-                               const MemoryLocation &Loc) override;
+    ModRefInfo getModRefInfo(ImmutableCallSite CS,
+                             const MemoryLocation &Loc) override;
 
-    ModRefResult getModRefInfo(ImmutableCallSite CS1,
-                               ImmutableCallSite CS2) override;
+    ModRefInfo getModRefInfo(ImmutableCallSite CS1,
+                             ImmutableCallSite CS2) override;
 
     /// pointsToConstantMemory - Chase pointers until we find a (constant
     /// global) or not.
@@ -554,16 +502,15 @@ namespace {
                                 bool OrLocal) override;
 
     /// Get the location associated with a pointer argument of a callsite.
-    ModRefResult getArgModRefInfo(ImmutableCallSite CS,
-                                  unsigned ArgIdx) override;
+    ModRefInfo getArgModRefInfo(ImmutableCallSite CS, unsigned ArgIdx) override;
 
     /// getModRefBehavior - Return the behavior when calling the given
     /// call site.
-    ModRefBehavior getModRefBehavior(ImmutableCallSite CS) override;
+    FunctionModRefBehavior getModRefBehavior(ImmutableCallSite CS) override;
 
     /// getModRefBehavior - Return the behavior when calling the given function.
     /// For use when the call site is not known.
-    ModRefBehavior getModRefBehavior(const Function *F) override;
+    FunctionModRefBehavior getModRefBehavior(const Function *F) override;
 
     /// getAdjustedAnalysisPointer - This method is used when a pass implements
     /// an analysis interface through multiple inheritance.  If needed, it
@@ -606,20 +553,6 @@ namespace {
     /// value. We have to do this because we are looking through phi nodes (That
     /// is we say noalias(V, phi(VA, VB)) if noalias(V, VA) and noalias(V, VB).
     bool isValueEqualInPotentialCycles(const Value *V1, const Value *V2);
-
-    /// \brief A Heuristic for aliasGEP that searches for a constant offset
-    /// between the variables.
-    ///
-    /// GetLinearExpression has some limitations, as generally zext(%x + 1)
-    /// != zext(%x) + zext(1) if the arithmetic overflows. GetLinearExpression
-    /// will therefore conservatively refuse to decompose these expressions.
-    /// However, we know that, for all %x, zext(%x) != zext(%x + 1), even if
-    /// the addition overflows.
-    bool
-    constantOffsetHeuristic(const SmallVectorImpl<VariableGEPIndex> &VarIndices,
-                            uint64_t V1Size, uint64_t V2Size,
-                            int64_t BaseOffset, const DataLayout *DL,
-                            AssumptionCache *AC, DominatorTree *DT);
 
     /// \brief Dest and Src are the variable indices from two decomposed
     /// GetElementPtr instructions GEP1 and GEP2 which have common base
@@ -753,33 +686,33 @@ static bool isMemsetPattern16(const Function *MS,
 }
 
 /// getModRefBehavior - Return the behavior when calling the given call site.
-AliasAnalysis::ModRefBehavior
+FunctionModRefBehavior
 BasicAliasAnalysis::getModRefBehavior(ImmutableCallSite CS) {
   if (CS.doesNotAccessMemory())
     // Can't do better than this.
-    return DoesNotAccessMemory;
+    return FMRB_DoesNotAccessMemory;
 
-  ModRefBehavior Min = UnknownModRefBehavior;
+  FunctionModRefBehavior Min = FMRB_UnknownModRefBehavior;
 
   // If the callsite knows it only reads memory, don't return worse
   // than that.
   if (CS.onlyReadsMemory())
-    Min = OnlyReadsMemory;
+    Min = FMRB_OnlyReadsMemory;
 
   if (CS.onlyAccessesArgMemory())
-    Min = ModRefBehavior(Min & OnlyAccessesArgumentPointees);
+    Min = FunctionModRefBehavior(Min & FMRB_OnlyAccessesArgumentPointees);
 
   // The AliasAnalysis base class has some smarts, lets use them.
-  return ModRefBehavior(AliasAnalysis::getModRefBehavior(CS) & Min);
+  return FunctionModRefBehavior(AliasAnalysis::getModRefBehavior(CS) & Min);
 }
 
 /// getModRefBehavior - Return the behavior when calling the given function.
 /// For use when the call site is not known.
-AliasAnalysis::ModRefBehavior
+FunctionModRefBehavior
 BasicAliasAnalysis::getModRefBehavior(const Function *F) {
   // If the function declares it doesn't access memory, we can't do better.
   if (F->doesNotAccessMemory())
-    return DoesNotAccessMemory;
+    return FMRB_DoesNotAccessMemory;
 
   // For intrinsics, we can check the table.
   if (Intrinsic::ID iid = F->getIntrinsicID()) {
@@ -788,26 +721,26 @@ BasicAliasAnalysis::getModRefBehavior(const Function *F) {
 #undef GET_INTRINSIC_MODREF_BEHAVIOR
   }
 
-  ModRefBehavior Min = UnknownModRefBehavior;
+  FunctionModRefBehavior Min = FMRB_UnknownModRefBehavior;
 
   // If the function declares it only reads memory, go with that.
   if (F->onlyReadsMemory())
-    Min = OnlyReadsMemory;
+    Min = FMRB_OnlyReadsMemory;
 
   if (F->onlyAccessesArgMemory())
-    Min = ModRefBehavior(Min & OnlyAccessesArgumentPointees);
+    Min = FunctionModRefBehavior(Min & FMRB_OnlyAccessesArgumentPointees);
 
   const TargetLibraryInfo &TLI =
       getAnalysis<TargetLibraryInfoWrapperPass>().getTLI();
   if (isMemsetPattern16(F, TLI))
-    Min = OnlyAccessesArgumentPointees;
+    Min = FMRB_OnlyAccessesArgumentPointees;
 
   // Otherwise be conservative.
-  return ModRefBehavior(AliasAnalysis::getModRefBehavior(F) & Min);
+  return FunctionModRefBehavior(AliasAnalysis::getModRefBehavior(F) & Min);
 }
 
-AliasAnalysis::ModRefResult
-BasicAliasAnalysis::getArgModRefInfo(ImmutableCallSite CS, unsigned ArgIdx) {
+ModRefInfo BasicAliasAnalysis::getArgModRefInfo(ImmutableCallSite CS,
+                                                unsigned ArgIdx) {
   if (const IntrinsicInst *II = dyn_cast<IntrinsicInst>(CS.getInstruction()))
     switch (II->getIntrinsicID()) {
     default:
@@ -817,7 +750,7 @@ BasicAliasAnalysis::getArgModRefInfo(ImmutableCallSite CS, unsigned ArgIdx) {
     case Intrinsic::memmove:
       assert((ArgIdx == 0 || ArgIdx == 1) &&
              "Invalid argument index for memory intrinsic");
-      return ArgIdx ? Ref : Mod;
+      return ArgIdx ? MRI_Ref : MRI_Mod;
     }
 
   // We can bound the aliasing properties of memset_pattern16 just as we can
@@ -828,7 +761,7 @@ BasicAliasAnalysis::getArgModRefInfo(ImmutableCallSite CS, unsigned ArgIdx) {
       isMemsetPattern16(CS.getCalledFunction(), *TLI)) {
     assert((ArgIdx == 0 || ArgIdx == 1) &&
            "Invalid argument index for memset_pattern16");
-    return ArgIdx ? Ref : Mod;
+    return ArgIdx ? MRI_Ref : MRI_Mod;
   }
   // FIXME: Handle memset_pattern4 and memset_pattern8 also.
 
@@ -852,9 +785,8 @@ bool BasicAliasAnalysis::doInitialization(Module &M) {
 /// specified memory object.  Since we only look at local properties of this
 /// function, we really can't say much about this query.  We do, however, use
 /// simple "address taken" analysis on local objects.
-AliasAnalysis::ModRefResult
-BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
-                                  const MemoryLocation &Loc) {
+ModRefInfo BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
+                                             const MemoryLocation &Loc) {
   assert(notDifferentParent(CS.getInstruction(), Loc.Ptr) &&
          "AliasAnalysis query involving multiple functions!");
 
@@ -868,7 +800,7 @@ BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
   if (isa<AllocaInst>(Object))
     if (const CallInst *CI = dyn_cast<CallInst>(CS.getInstruction()))
       if (CI->isTailCall())
-        return NoModRef;
+        return MRI_NoModRef;
 
   // If the pointer is to a locally allocated object that does not escape,
   // then the call can not mod/ref the pointer unless the call takes the pointer
@@ -897,27 +829,26 @@ BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
     }
 
     if (!PassedAsArg)
-      return NoModRef;
+      return MRI_NoModRef;
   }
 
   // While the assume intrinsic is marked as arbitrarily writing so that
   // proper control dependencies will be maintained, it never aliases any
   // particular memory location.
   if (isAssumeIntrinsic(CS))
-    return NoModRef;
+    return MRI_NoModRef;
 
   // The AliasAnalysis base class has some smarts, lets use them.
   return AliasAnalysis::getModRefInfo(CS, Loc);
 }
 
-AliasAnalysis::ModRefResult
-BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS1,
-                                  ImmutableCallSite CS2) {
+ModRefInfo BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS1,
+                                             ImmutableCallSite CS2) {
   // While the assume intrinsic is marked as arbitrarily writing so that
   // proper control dependencies will be maintained, it never aliases any
   // particular memory location.
   if (isAssumeIntrinsic(CS1) || isAssumeIntrinsic(CS2))
-    return NoModRef;
+    return MRI_NoModRef;
 
   // The AliasAnalysis base class has some smarts, lets use them.
   return AliasAnalysis::getModRefInfo(CS1, CS2);
@@ -1015,60 +946,6 @@ static AliasResult aliasSameBasePointerGEPs(const GEPOperator *GEP1,
     return NoAlias;
 
   return MayAlias;
-}
-
-bool BasicAliasAnalysis::constantOffsetHeuristic(
-    const SmallVectorImpl<VariableGEPIndex> &VarIndices, uint64_t V1Size,
-    uint64_t V2Size, int64_t BaseOffset, const DataLayout *DL,
-    AssumptionCache *AC, DominatorTree *DT) {
-  if (VarIndices.size() != 2 || V1Size == MemoryLocation::UnknownSize ||
-      V2Size == MemoryLocation::UnknownSize || !DL)
-    return false;
-
-  const VariableGEPIndex &Var0 = VarIndices[0], &Var1 = VarIndices[1];
-
-  if (Var0.ZExtBits != Var1.ZExtBits || Var0.SExtBits != Var1.SExtBits ||
-      Var0.Scale != -Var1.Scale)
-    return false;
-
-  unsigned Width = Var1.V->getType()->getIntegerBitWidth();
-
-  // We'll strip off the Extensions of Var0 and Var1 and do another round
-  // of GetLinearExpression decomposition. In the example above, if Var0
-  // is zext(%x + 1) we should get V1 == %x and V1Offset == 1.
-
-  APInt V0Scale(Width, 0), V0Offset(Width, 0), V1Scale(Width, 0),
-      V1Offset(Width, 0);
-  bool NSW = true, NUW = true;
-  unsigned V0ZExtBits = 0, V0SExtBits = 0, V1ZExtBits = 0, V1SExtBits = 0;
-  const Value *V0 = GetLinearExpression(Var0.V, V0Scale, V0Offset, V0ZExtBits,
-                                        V0SExtBits, *DL, 0, AC, DT, NSW, NUW);
-  NSW = true, NUW = true;
-  const Value *V1 = GetLinearExpression(Var1.V, V1Scale, V1Offset, V1ZExtBits,
-                                        V1SExtBits, *DL, 0, AC, DT, NSW, NUW);
-
-  if (V0Scale != V1Scale || V0ZExtBits != V1ZExtBits ||
-      V0SExtBits != V1SExtBits || !isValueEqualInPotentialCycles(V0, V1))
-    return false;
-
-  // We have a hit - Var0 and Var1 only differ by a constant offset!
-
-  // If we've been sext'ed then zext'd the maximum difference between Var0 and
-  // Var1 is possible to calculate, but we're just interested in the absolute
-  // minumum difference between the two. The minimum distance may occur due to
-  // wrapping; consider "add i3 %i, 5": if %i == 7 then 7 + 5 mod 8 == 4, and so
-  // the minimum distance between %i and %i + 5 is 3.
-  APInt MinDiff = V0Offset - V1Offset,
-        Wrapped = APInt::getMaxValue(Width) - MinDiff + APInt(Width, 1);
-  MinDiff = APIntOps::umin(MinDiff, Wrapped);
-  uint64_t MinDiffBytes = MinDiff.getZExtValue() * std::abs(Var0.Scale);
-
-  // We can't definitely say whether GEP1 is before or after V2 due to wrapping
-  // arithmetic (i.e. for some values of GEP1 and V2 GEP1 < V2, and for other
-  // values GEP1 > V2). We'll therefore only declare NoAlias if both V1Size and
-  // V2Size can fit in the MinDiffBytes gap.
-  return V1Size + std::abs(BaseOffset) <= MinDiffBytes &&
-         V2Size + std::abs(BaseOffset) <= MinDiffBytes;
 }
 
 /// aliasGEP - Provide a bunch of ad-hoc rules to disambiguate a GEP instruction
@@ -1293,7 +1170,7 @@ AliasResult BasicAliasAnalysis::aliasGEP(
 
         // Zero-extension widens the variable, and so forces the sign
         // bit to zero.
-        bool IsZExt = GEP1VariableIndices[i].ZExtBits > 0 || isa<ZExtInst>(V);
+        bool IsZExt = GEP1VariableIndices[i].Extension == EK_ZeroExt;
         SignKnownZero |= IsZExt;
         SignKnownOne &= !IsZExt;
 
@@ -1322,10 +1199,6 @@ AliasResult BasicAliasAnalysis::aliasGEP(
     // If GEP1BasePtr > V2 (GEP1BaseOffset > 0) then we know the pointers
     // don't alias if V2Size can fit in the gap between V2 and GEP1BasePtr.
     if (AllPositive && GEP1BaseOffset > 0 && V2Size <= (uint64_t) GEP1BaseOffset)
-      return NoAlias;
-
-    if (constantOffsetHeuristic(GEP1VariableIndices, V1Size, V2Size,
-                                GEP1BaseOffset, DL, AC1, DT))
       return NoAlias;
   }
 
@@ -1436,6 +1309,7 @@ AliasResult BasicAliasAnalysis::aliasPHI(const PHINode *PN, uint64_t PNSize,
 
   SmallPtrSet<Value*, 4> UniqueSrc;
   SmallVector<Value*, 4> V1Srcs;
+  bool isRecursive = false;
   for (Value *PV1 : PN->incoming_values()) {
     if (isa<PHINode>(PV1))
       // If any of the source itself is a PHI, return MayAlias conservatively
@@ -1443,12 +1317,33 @@ AliasResult BasicAliasAnalysis::aliasPHI(const PHINode *PN, uint64_t PNSize,
       // sides are PHI nodes. In which case, this is O(m x n) time where 'm'
       // and 'n' are the number of PHI sources.
       return MayAlias;
+
+    if (EnableRecPhiAnalysis)
+      if (GEPOperator *PV1GEP = dyn_cast<GEPOperator>(PV1)) {
+        // Check whether the incoming value is a GEP that advances the pointer
+        // result of this PHI node (e.g. in a loop). If this is the case, we
+        // would recurse and always get a MayAlias. Handle this case specially
+        // below.
+        if (PV1GEP->getPointerOperand() == PN && PV1GEP->getNumIndices() == 1 &&
+            isa<ConstantInt>(PV1GEP->idx_begin())) {
+          isRecursive = true;
+          continue;
+        }
+      }
+
     if (UniqueSrc.insert(PV1).second)
       V1Srcs.push_back(PV1);
   }
 
+  // If this PHI node is recursive, set the size of the accessed memory to
+  // unknown to represent all the possible values the GEP could advance the
+  // pointer to.
+  if (isRecursive)
+    PNSize = MemoryLocation::UnknownSize;
+
   AliasResult Alias = aliasCheck(V2, V2Size, V2AAInfo,
                                  V1Srcs[0], PNSize, PNAAInfo);
+
   // Early exit if the check of the first PHI source against V2 is MayAlias.
   // Other results are not possible.
   if (Alias == MayAlias)
@@ -1666,14 +1561,14 @@ void BasicAliasAnalysis::GetIndexDifference(
 
   for (unsigned i = 0, e = Src.size(); i != e; ++i) {
     const Value *V = Src[i].V;
-    unsigned ZExtBits = Src[i].ZExtBits, SExtBits = Src[i].SExtBits;
+    ExtensionKind Extension = Src[i].Extension;
     int64_t Scale = Src[i].Scale;
 
     // Find V in Dest.  This is N^2, but pointer indices almost never have more
     // than a few variable indexes.
     for (unsigned j = 0, e = Dest.size(); j != e; ++j) {
       if (!isValueEqualInPotentialCycles(Dest[j].V, V) ||
-          Dest[j].ZExtBits != ZExtBits || Dest[j].SExtBits != SExtBits)
+          Dest[j].Extension != Extension)
         continue;
 
       // If we found it, subtract off Scale V's from the entry in Dest.  If it
@@ -1688,7 +1583,7 @@ void BasicAliasAnalysis::GetIndexDifference(
 
     // If we didn't consume this entry, add it to the end of the Dest list.
     if (Scale) {
-      VariableGEPIndex Entry = {V, ZExtBits, SExtBits, -Scale};
+      VariableGEPIndex Entry = { V, Extension, -Scale };
       Dest.push_back(Entry);
     }
   }

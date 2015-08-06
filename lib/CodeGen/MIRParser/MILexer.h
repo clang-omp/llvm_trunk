@@ -35,6 +35,13 @@ struct MIToken {
     comma,
     equal,
     underscore,
+    colon,
+    coloncolon,
+    exclaim,
+    lparen,
+    rparen,
+    plus,
+    minus,
 
     // Keywords
     kw_implicit,
@@ -42,32 +49,69 @@ struct MIToken {
     kw_dead,
     kw_killed,
     kw_undef,
+    kw_early_clobber,
+    kw_debug_use,
+    kw_frame_setup,
+    kw_debug_location,
+    kw_cfi_offset,
+    kw_cfi_def_cfa_register,
+    kw_cfi_def_cfa_offset,
+    kw_cfi_def_cfa,
+    kw_blockaddress,
+    kw_target_index,
+    kw_half,
+    kw_float,
+    kw_double,
+    kw_x86_fp80,
+    kw_fp128,
+    kw_ppc_fp128,
+    kw_target_flags,
+    kw_volatile,
 
     // Identifier tokens
     Identifier,
+    IntegerType,
     NamedRegister,
     MachineBasicBlock,
+    StackObject,
+    FixedStackObject,
     NamedGlobalValue,
     GlobalValue,
+    ExternalSymbol,
 
     // Other tokens
     IntegerLiteral,
-    VirtualRegister
+    FloatingPointLiteral,
+    VirtualRegister,
+    ConstantPoolItem,
+    JumpTableIndex,
+    NamedIRBlock,
+    IRBlock,
+    NamedIRValue,
   };
 
 private:
   TokenKind Kind;
   unsigned StringOffset;
+  bool HasStringValue;
   StringRef Range;
+  std::string StringValue;
   APSInt IntVal;
 
 public:
   MIToken(TokenKind Kind, StringRef Range, unsigned StringOffset = 0)
-      : Kind(Kind), StringOffset(StringOffset), Range(Range) {}
+      : Kind(Kind), StringOffset(StringOffset), HasStringValue(false),
+        Range(Range) {}
+
+  MIToken(TokenKind Kind, StringRef Range, std::string StringValue,
+          unsigned StringOffset = 0)
+      : Kind(Kind), StringOffset(StringOffset), HasStringValue(true),
+        Range(Range), StringValue(std::move(StringValue)) {}
 
   MIToken(TokenKind Kind, StringRef Range, const APSInt &IntVal,
           unsigned StringOffset = 0)
-      : Kind(Kind), StringOffset(StringOffset), Range(Range), IntVal(IntVal) {}
+      : Kind(Kind), StringOffset(StringOffset), HasStringValue(false),
+        Range(Range), IntVal(IntVal) {}
 
   TokenKind kind() const { return Kind; }
 
@@ -80,8 +124,11 @@ public:
 
   bool isRegisterFlag() const {
     return Kind == kw_implicit || Kind == kw_implicit_define ||
-           Kind == kw_dead || Kind == kw_killed || Kind == kw_undef;
+           Kind == kw_dead || Kind == kw_killed || Kind == kw_undef ||
+           Kind == kw_early_clobber || Kind == kw_debug_use;
   }
+
+  bool isMemoryOperandFlag() const { return Kind == kw_volatile; }
 
   bool is(TokenKind K) const { return Kind == K; }
 
@@ -89,13 +136,26 @@ public:
 
   StringRef::iterator location() const { return Range.begin(); }
 
-  StringRef stringValue() const { return Range.drop_front(StringOffset); }
+  /// Return the token's raw string value.
+  ///
+  /// If the string value is quoted, this method returns that quoted string as
+  /// it is, without unescaping the string value.
+  StringRef rawStringValue() const { return Range.drop_front(StringOffset); }
+
+  /// Return the token's string value.
+  StringRef stringValue() const {
+    return HasStringValue ? StringRef(StringValue)
+                          : Range.drop_front(StringOffset);
+  }
 
   const APSInt &integerValue() const { return IntVal; }
 
   bool hasIntegerValue() const {
     return Kind == IntegerLiteral || Kind == MachineBasicBlock ||
-           Kind == GlobalValue || Kind == VirtualRegister;
+           Kind == StackObject || Kind == FixedStackObject ||
+           Kind == GlobalValue || Kind == VirtualRegister ||
+           Kind == ConstantPoolItem || Kind == JumpTableIndex ||
+           Kind == IRBlock;
   }
 };
 

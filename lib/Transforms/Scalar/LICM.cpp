@@ -445,7 +445,7 @@ bool canSinkOrHoistInst(Instruction &I, AliasAnalysis *AA, DominatorTree *DT,
     // Don't hoist loads which have may-aliased stores in loop.
     uint64_t Size = 0;
     if (LI->getType()->isSized())
-      Size = AA->getTypeStoreSize(LI->getType());
+      Size = I.getModule()->getDataLayout().getTypeStoreSize(LI->getType());
 
     AAMDNodes AAInfo;
     LI->getAAMetadata(AAInfo);
@@ -457,8 +457,8 @@ bool canSinkOrHoistInst(Instruction &I, AliasAnalysis *AA, DominatorTree *DT,
       return false;
 
     // Handle simple cases by querying alias analysis.
-    AliasAnalysis::ModRefBehavior Behavior = AA->getModRefBehavior(CI);
-    if (Behavior == AliasAnalysis::DoesNotAccessMemory)
+    FunctionModRefBehavior Behavior = AA->getModRefBehavior(CI);
+    if (Behavior == FMRB_DoesNotAccessMemory)
       return true;
     if (AliasAnalysis::onlyReadsMemory(Behavior)) {
       // If this call only reads from memory and there are no writes to memory

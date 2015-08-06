@@ -864,13 +864,13 @@ static bool needToReserveScavengingSpillSlots(MachineFunction &MF,
   // Check for an unused caller-saved register.
   for ( ; *CallerSavedRegs; ++CallerSavedRegs) {
     MCPhysReg FreeReg = *CallerSavedRegs;
-    if (MRI.isPhysRegUsed(FreeReg))
+    if (!MRI.reg_nodbg_empty(FreeReg))
       continue;
 
     // Check aliased register usage.
     bool IsCurrentRegUsed = false;
     for (MCRegAliasIterator AI(FreeReg, &HRI, false); AI.isValid(); ++AI)
-      if (MRI.isPhysRegUsed(*AI)) {
+      if (!MRI.reg_nodbg_empty(*AI)) {
         IsCurrentRegUsed = true;
         break;
       }
@@ -959,8 +959,11 @@ bool HexagonFrameLowering::replacePredRegPseudoSpillCode(MachineFunction &MF)
 }
 
 
-void HexagonFrameLowering::processFunctionBeforeCalleeSavedScan(
-      MachineFunction &MF, RegScavenger* RS) const {
+void HexagonFrameLowering::determineCalleeSaves(MachineFunction &MF,
+                                                BitVector &SavedRegs,
+                                                RegScavenger *RS) const {
+  TargetFrameLowering::determineCalleeSaves(MF, SavedRegs, RS);
+
   auto &HST = static_cast<const HexagonSubtarget&>(MF.getSubtarget());
   auto &HRI = *HST.getRegisterInfo();
 
@@ -969,11 +972,9 @@ void HexagonFrameLowering::processFunctionBeforeCalleeSavedScan(
   // If we have a function containing __builtin_eh_return we want to spill and
   // restore all callee saved registers. Pretend that they are used.
   if (HasEHReturn) {
-    MachineRegisterInfo &MRI = MF.getRegInfo();
     for (const MCPhysReg *CSRegs = HRI.getCalleeSavedRegs(&MF); *CSRegs;
          ++CSRegs)
-      if (!MRI.isPhysRegUsed(*CSRegs))
-        MRI.setPhysRegUsed(*CSRegs);
+      SavedRegs.set(*CSRegs);
   }
 
   const TargetRegisterClass &RC = Hexagon::IntRegsRegClass;
@@ -1218,6 +1219,7 @@ MachineInstr *HexagonFrameLowering::getAlignaInstr(MachineFunction &MF) const {
 }
 
 
+// FIXME: Use Function::optForSize().
 inline static bool isOptSize(const MachineFunction &MF) {
   AttributeSet AF = MF.getFunction()->getAttributes();
   return AF.hasAttribute(AttributeSet::FunctionIndex,
@@ -1225,8 +1227,7 @@ inline static bool isOptSize(const MachineFunction &MF) {
 }
 
 inline static bool isMinSize(const MachineFunction &MF) {
-  AttributeSet AF = MF.getFunction()->getAttributes();
-  return AF.hasAttribute(AttributeSet::FunctionIndex, Attribute::MinSize);
+  return MF.getFunction()->optForMinSize();
 }
 
 

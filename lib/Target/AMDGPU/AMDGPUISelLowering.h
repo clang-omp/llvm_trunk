@@ -65,6 +65,7 @@ private:
   SDValue LowerSIGN_EXTEND_INREG(SDValue Op, SelectionDAG &DAG) const;
 
   SDValue performStoreCombine(SDNode *N, DAGCombinerInfo &DCI) const;
+  SDValue performShlCombine(SDNode *N, DAGCombinerInfo &DCI) const;
   SDValue performMulCombine(SDNode *N, DAGCombinerInfo &DCI) const;
 
 protected:
@@ -215,7 +216,7 @@ public:
 
   /// \brief Helper function that returns the byte offset of the given
   /// type of implicit parameter.
-  unsigned getImplicitParameterOffset(const AMDGPUMachineFunction *MFI,
+  uint32_t getImplicitParameterOffset(const AMDGPUMachineFunction *MFI,
                                       const ImplicitParameter Param) const;
 };
 

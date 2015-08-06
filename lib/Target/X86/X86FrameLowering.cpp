@@ -27,15 +27,11 @@
 #include "llvm/IR/Function.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCSymbol.h"
-#include "llvm/Support/CommandLine.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Support/Debug.h"
 #include <cstdlib>
 
 using namespace llvm;
-
-// FIXME: completely move here.
-extern cl::opt<bool> ForceStackAlign;
 
 X86FrameLowering::X86FrameLowering(const X86Subtarget &STI,
                                    unsigned StackAlignOverride)
@@ -345,30 +341,6 @@ MachineInstrBuilder X86FrameLowering::BuildStackAdjustment(
     MI->getOperand(3).setIsDead(); // The EFLAGS implicit def is dead.
   }
   return MI;
-}
-
-/// mergeSPUpdatesUp - Merge two stack-manipulating instructions upper iterator.
-static
-void mergeSPUpdatesUp(MachineBasicBlock &MBB, MachineBasicBlock::iterator &MBBI,
-                      unsigned StackPtr, uint64_t *NumBytes = nullptr) {
-  if (MBBI == MBB.begin()) return;
-
-  MachineBasicBlock::iterator PI = std::prev(MBBI);
-  unsigned Opc = PI->getOpcode();
-  if ((Opc == X86::ADD64ri32 || Opc == X86::ADD64ri8 ||
-       Opc == X86::ADD32ri || Opc == X86::ADD32ri8 ||
-       Opc == X86::LEA32r || Opc == X86::LEA64_32r) &&
-      PI->getOperand(0).getReg() == StackPtr) {
-    if (NumBytes)
-      *NumBytes += PI->getOperand(2).getImm();
-    MBB.erase(PI);
-  } else if ((Opc == X86::SUB64ri32 || Opc == X86::SUB64ri8 ||
-              Opc == X86::SUB32ri || Opc == X86::SUB32ri8) &&
-             PI->getOperand(0).getReg() == StackPtr) {
-    if (NumBytes)
-      *NumBytes -= PI->getOperand(2).getImm();
-    MBB.erase(PI);
-  }
 }
 
 int X86FrameLowering::mergeSPUpdates(MachineBasicBlock &MBB,
@@ -794,6 +766,7 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
   int StackOffset = 2 * stackGrowth;
 
   while (MBBI != MBB.end() &&
+         MBBI->getFlag(MachineInstr::FrameSetup) &&
          (MBBI->getOpcode() == X86::PUSH32r ||
           MBBI->getOpcode() == X86::PUSH64r)) {
     PushedRegs = true;
@@ -1077,7 +1050,7 @@ void X86FrameLowering::emitEpilogue(MachineFunction &MF,
   // If there is an ADD32ri or SUB32ri of ESP immediately before this
   // instruction, merge the two instructions.
   if (NumBytes || MFI->hasVarSizedObjects())
-    mergeSPUpdatesUp(MBB, MBBI, StackPtr, &NumBytes);
+    NumBytes += mergeSPUpdates(MBB, MBBI, true);
 
   // If dynamic alloca is used, then reset esp to point to the last callee-saved
   // slot before popping them off! Same applies for the case, when stack was
@@ -1425,9 +1398,11 @@ bool X86FrameLowering::restoreCalleeSavedRegisters(MachineBasicBlock &MBB,
   return true;
 }
 
-void
-X86FrameLowering::processFunctionBeforeCalleeSavedScan(MachineFunction &MF,
-                                                       RegScavenger *RS) const {
+void X86FrameLowering::determineCalleeSaves(MachineFunction &MF,
+                                            BitVector &SavedRegs,
+                                            RegScavenger *RS) const {
+  TargetFrameLowering::determineCalleeSaves(MF, SavedRegs, RS);
+
   MachineFrameInfo *MFI = MF.getFrameInfo();
 
   X86MachineFunctionInfo *X86FI = MF.getInfo<X86MachineFunctionInfo>();
@@ -1449,7 +1424,7 @@ X86FrameLowering::processFunctionBeforeCalleeSavedScan(MachineFunction &MF,
 
   // Spill the BasePtr if it's used.
   if (TRI->hasBasePointer(MF))
-    MF.getRegInfo().setPhysRegUsed(TRI->getBaseRegister());
+    SavedRegs.set(TRI->getBaseRegister());
 }
 
 static bool
@@ -1680,8 +1655,6 @@ void X86FrameLowering::adjustForSegmentedStacks(
       .addImm(StackSize);
     BuildMI(allocMBB, DL, TII.get(MOVri), Reg11)
       .addImm(X86FI->getArgumentStackSize());
-    MF.getRegInfo().setPhysRegUsed(Reg10);
-    MF.getRegInfo().setPhysRegUsed(Reg11);
   } else {
     BuildMI(allocMBB, DL, TII.get(X86::PUSHi32))
       .addImm(X86FI->getArgumentStackSize());
