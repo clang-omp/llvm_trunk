@@ -19,20 +19,21 @@ defm FDIV : BinaryFP<fdiv>;
 defm FABS : UnaryFP<fabs>;
 defm FNEG : UnaryFP<fneg>;
 defm COPYSIGN : BinaryFP<fcopysign>;
-defm CEIL : UnaryFP<fceil>;
-defm FLOOR : UnaryFP<ffloor>;
-defm TRUNC : UnaryFP<ftrunc>;
-defm NEARESTINT : UnaryFP<fnearbyint>;
 
 /*
- * TODO(jfb): Add the following for 32-bit and 64-bit.
- *
- * float32.eq: compare equal
- * float32.lt: less than
- * float32.le: less than or equal
- * float32.gt: greater than
- * float32.ge: greater than or equal
+ * TODO(jfb): add and test these:
+ * defm CEIL : UnaryFP<fceil>;
+ * defm FLOOR : UnaryFP<ffloor>;
+ * defm TRUNC : UnaryFP<ftrunc>;
+ * defm NEARESTINT : UnaryFP<fnearbyint>;
  */
+
+defm EQ : ComparisonFP<SETOEQ>;
+defm NE : ComparisonFP<SETUNE>;
+defm LT : ComparisonFP<SETOLT>;
+defm LE : ComparisonFP<SETOLE>;
+defm GT : ComparisonFP<SETOGT>;
+defm GE : ComparisonFP<SETOGE>;
 
 defm SQRT : UnaryFP<fsqrt>;
 

@@ -218,6 +218,20 @@ void MIRPrinter::convert(yaml::MachineFunction &MF,
       printReg(I->second, LiveIn.VirtualRegister, TRI);
     MF.LiveIns.push_back(LiveIn);
   }
+  // The used physical register mask is printed as an inverted callee saved
+  // register mask.
+  const BitVector &UsedPhysRegMask = RegInfo.getUsedPhysRegsMask();
+  if (UsedPhysRegMask.none())
+    return;
+  std::vector<yaml::FlowStringValue> CalleeSavedRegisters;
+  for (unsigned I = 0, E = UsedPhysRegMask.size(); I != E; ++I) {
+    if (!UsedPhysRegMask[I]) {
+      yaml::FlowStringValue Reg;
+      printReg(I, Reg, TRI);
+      CalleeSavedRegisters.push_back(Reg);
+    }
+  }
+  MF.CalleeSavedRegisters = CalleeSavedRegisters;
 }
 
 void MIRPrinter::convert(ModuleSlotTracker &MST,
@@ -645,6 +659,21 @@ void MIPrinter::print(const MachineOperand &Op, const TargetRegisterInfo *TRI) {
       llvm_unreachable("Can't print this machine register mask yet.");
     break;
   }
+  case MachineOperand::MO_RegisterLiveOut: {
+    const uint32_t *RegMask = Op.getRegLiveOut();
+    OS << "liveout(";
+    bool IsCommaNeeded = false;
+    for (unsigned Reg = 0, E = TRI->getNumRegs(); Reg < E; ++Reg) {
+      if (RegMask[Reg / 32] & (1U << (Reg % 32))) {
+        if (IsCommaNeeded)
+          OS << ", ";
+        printReg(Reg, OS, TRI);
+        IsCommaNeeded = true;
+      }
+    }
+    OS << ")";
+    break;
+  }
   case MachineOperand::MO_Metadata:
     Op.getMetadata()->printAsOperand(OS, MST);
     break;
@@ -678,7 +707,9 @@ void MIPrinter::print(const MachineMemOperand &Op) {
   if (const Value *Val = Op.getValue())
     printIRValueReference(*Val);
   // TODO: Print PseudoSourceValue.
-  // TODO: Print the base alignment.
+  printOffset(Op.getOffset());
+  if (Op.getBaseAlignment() != Op.getSize())
+    OS << ", align " << Op.getBaseAlignment();
   // TODO: Print the metadata attributes.
   OS << ')';
 }

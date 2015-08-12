@@ -199,34 +199,68 @@ Instruction *InstCombiner::SimplifyMemSet(MemSetInst *MI) {
 
 static Value *SimplifyX86immshift(const IntrinsicInst &II,
                                   InstCombiner::BuilderTy &Builder,
-                                  bool ShiftLeft) {
-  // Simplify if count is constant. To 0 if >= BitWidth,
-  // otherwise to shl/lshr.
-  auto CDV = dyn_cast<ConstantDataVector>(II.getArgOperand(1));
-  auto CInt = dyn_cast<ConstantInt>(II.getArgOperand(1));
-  if (!CDV && !CInt)
+                                  bool LogicalShift, bool ShiftLeft) {
+  assert((LogicalShift || !ShiftLeft) && "Only logical shifts can shift left");
+
+  // Simplify if count is constant.
+  auto Arg1 = II.getArgOperand(1);
+  auto CAZ = dyn_cast<ConstantAggregateZero>(Arg1);
+  auto CDV = dyn_cast<ConstantDataVector>(Arg1);
+  auto CInt = dyn_cast<ConstantInt>(Arg1);
+  if (!CAZ && !CDV && !CInt)
     return nullptr;
-  ConstantInt *Count;
-  if (CDV)
-    Count = cast<ConstantInt>(CDV->getElementAsConstant(0));
-  else
-    Count = CInt;
+
+  APInt Count(64, 0);
+  if (CDV) {
+    // SSE2/AVX2 uses all the first 64-bits of the 128-bit vector
+    // operand to compute the shift amount.
+    auto VT = cast<VectorType>(CDV->getType());
+    unsigned BitWidth = VT->getElementType()->getPrimitiveSizeInBits();
+    assert((64 % BitWidth) == 0 && "Unexpected packed shift size");
+    unsigned NumSubElts = 64 / BitWidth;
+
+    // Concatenate the sub-elements to create the 64-bit value.
+    for (unsigned i = 0; i != NumSubElts; ++i) {
+      unsigned SubEltIdx = (NumSubElts - 1) - i;
+      auto SubElt = cast<ConstantInt>(CDV->getElementAsConstant(SubEltIdx));
+      Count = Count.shl(BitWidth);
+      Count |= SubElt->getValue().zextOrTrunc(64);
+    }
+  }
+  else if (CInt)
+    Count = CInt->getValue();
 
   auto Vec = II.getArgOperand(0);
   auto VT = cast<VectorType>(Vec->getType());
   auto SVT = VT->getElementType();
-  if (Count->getZExtValue() > (SVT->getPrimitiveSizeInBits() - 1))
-    return ConstantAggregateZero::get(VT);
-
   unsigned VWidth = VT->getNumElements();
+  unsigned BitWidth = SVT->getPrimitiveSizeInBits();
+
+  // If shift-by-zero then just return the original value.
+  if (Count == 0)
+    return Vec;
+
+  // Handle cases when Shift >= BitWidth.
+  if (Count.uge(BitWidth)) {
+    // If LogicalShift - just return zero.
+    if (LogicalShift)
+      return ConstantAggregateZero::get(VT);
+
+    // If ArithmeticShift - clamp Shift to (BitWidth - 1).
+    Count = APInt(64, BitWidth - 1);
+  }
 
   // Get a constant vector of the same type as the first operand.
-  auto VTCI = ConstantInt::get(VT->getElementType(), Count->getZExtValue());
+  auto ShiftAmt = ConstantInt::get(SVT, Count.zextOrTrunc(BitWidth));
+  auto ShiftVec = Builder.CreateVectorSplat(VWidth, ShiftAmt);
 
   if (ShiftLeft)
-    return Builder.CreateShl(Vec, Builder.CreateVectorSplat(VWidth, VTCI));
+    return Builder.CreateShl(Vec, ShiftVec);
 
-  return Builder.CreateLShr(Vec, Builder.CreateVectorSplat(VWidth, VTCI));
+  if (LogicalShift)
+    return Builder.CreateLShr(Vec, ShiftVec);
+
+  return Builder.CreateAShr(Vec, ShiftVec);
 }
 
 static Value *SimplifyX86extend(const IntrinsicInst &II,
@@ -753,6 +787,19 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     break;
   }
 
+  // Constant fold ashr( <A x Bi>, Ci ).
+  case Intrinsic::x86_sse2_psra_d:
+  case Intrinsic::x86_sse2_psra_w:
+  case Intrinsic::x86_sse2_psrai_d:
+  case Intrinsic::x86_sse2_psrai_w:
+  case Intrinsic::x86_avx2_psra_d:
+  case Intrinsic::x86_avx2_psra_w:
+  case Intrinsic::x86_avx2_psrai_d:
+  case Intrinsic::x86_avx2_psrai_w:
+    if (Value *V = SimplifyX86immshift(*II, *Builder, false, false))
+      return ReplaceInstUsesWith(*II, V);
+    break;
+
   // Constant fold lshr( <A x Bi>, Ci ).
   case Intrinsic::x86_sse2_psrl_d:
   case Intrinsic::x86_sse2_psrl_q:
@@ -766,7 +813,7 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
   case Intrinsic::x86_avx2_psrli_d:
   case Intrinsic::x86_avx2_psrli_q:
   case Intrinsic::x86_avx2_psrli_w:
-    if (Value *V = SimplifyX86immshift(*II, *Builder, false))
+    if (Value *V = SimplifyX86immshift(*II, *Builder, true, false))
       return ReplaceInstUsesWith(*II, V);
     break;
 
@@ -783,7 +830,7 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
   case Intrinsic::x86_avx2_pslli_d:
   case Intrinsic::x86_avx2_pslli_q:
   case Intrinsic::x86_avx2_pslli_w:
-    if (Value *V = SimplifyX86immshift(*II, *Builder, true))
+    if (Value *V = SimplifyX86immshift(*II, *Builder, true, true))
       return ReplaceInstUsesWith(*II, V);
     break;
 
