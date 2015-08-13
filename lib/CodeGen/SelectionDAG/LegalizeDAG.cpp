@@ -4278,7 +4278,6 @@ void SelectionDAGLegalize::PromoteNode(SDNode *Node) {
   case ISD::FREM:
   case ISD::FMINNUM:
   case ISD::FMAXNUM:
-  case ISD::FCOPYSIGN:
   case ISD::FPOW: {
     Tmp1 = DAG.getNode(ISD::FP_EXTEND, dl, NVT, Node->getOperand(0));
     Tmp2 = DAG.getNode(ISD::FP_EXTEND, dl, NVT, Node->getOperand(1));
@@ -4297,12 +4296,20 @@ void SelectionDAGLegalize::PromoteNode(SDNode *Node) {
                     DAG.getIntPtrConstant(0, dl)));
     break;
   }
+  case ISD::FCOPYSIGN:
   case ISD::FPOWI: {
     Tmp1 = DAG.getNode(ISD::FP_EXTEND, dl, NVT, Node->getOperand(0));
     Tmp2 = Node->getOperand(1);
     Tmp3 = DAG.getNode(Node->getOpcode(), dl, NVT, Tmp1, Tmp2);
+
+    // fcopysign doesn't change anything but the sign bit, so
+    //   (fp_round (fcopysign (fpext a), b))
+    // is as precise as
+    //   (fp_round (fpext a))
+    // which is a no-op. Mark it as a TRUNCating FP_ROUND.
+    const bool isTrunc = (Node->getOpcode() == ISD::FCOPYSIGN);
     Results.push_back(DAG.getNode(ISD::FP_ROUND, dl, OVT,
-                                  Tmp3, DAG.getIntPtrConstant(0, dl)));
+                                  Tmp3, DAG.getIntPtrConstant(isTrunc, dl)));
     break;
   }
   case ISD::FFLOOR:
