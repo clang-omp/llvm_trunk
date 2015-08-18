@@ -695,6 +695,19 @@ bool MIParser::verifyImplicitOperands(
       if (ImplicitOperand.isIdenticalTo(Operand))
         continue;
       if (Operand.isReg() && Operand.isImplicit()) {
+        // Check if this implicit register is a subregister of an explicit
+        // register operand.
+        bool IsImplicitSubRegister = false;
+        for (size_t K = 0, E = Operands.size(); K < E; ++K) {
+          const auto &Op = Operands[K].Operand;
+          if (Op.isReg() && !Op.isImplicit() &&
+              TRI->isSubRegister(Op.getReg(), Operand.getReg())) {
+            IsImplicitSubRegister = true;
+            break;
+          }
+        }
+        if (IsImplicitSubRegister)
+          continue;
         return error(Operands[J].Begin,
                      Twine("expected an implicit register operand '") +
                          printImplicitRegisterFlag(ImplicitOperand) + " %" +
@@ -1526,17 +1539,44 @@ bool MIParser::parseMachineMemoryOperand(MachineMemOperand *&Dest) {
   if (parseMachinePointerInfo(Ptr))
     return true;
   unsigned BaseAlignment = Size;
-  if (Token.is(MIToken::comma)) {
-    lex();
-    if (Token.isNot(MIToken::kw_align))
-      return error("expected 'align'");
-    if (parseAlignment(BaseAlignment))
-      return true;
+  AAMDNodes AAInfo;
+  MDNode *Range = nullptr;
+  while (consumeIfPresent(MIToken::comma)) {
+    switch (Token.kind()) {
+    case MIToken::kw_align:
+      if (parseAlignment(BaseAlignment))
+        return true;
+      break;
+    case MIToken::md_tbaa:
+      lex();
+      if (parseMDNode(AAInfo.TBAA))
+        return true;
+      break;
+    case MIToken::md_alias_scope:
+      lex();
+      if (parseMDNode(AAInfo.Scope))
+        return true;
+      break;
+    case MIToken::md_noalias:
+      lex();
+      if (parseMDNode(AAInfo.NoAlias))
+        return true;
+      break;
+    case MIToken::md_range:
+      lex();
+      if (parseMDNode(Range))
+        return true;
+      break;
+    // TODO: Report an error on duplicate metadata nodes.
+    default:
+      return error("expected 'align' or '!tbaa' or '!alias.scope' or "
+                   "'!noalias' or '!range'");
+    }
   }
-  // TODO: Parse the attached metadata nodes.
   if (expectAndConsume(MIToken::rparen))
     return true;
-  Dest = MF.getMachineMemOperand(Ptr, Flags, Size, BaseAlignment);
+  Dest =
+      MF.getMachineMemOperand(Ptr, Flags, Size, BaseAlignment, AAInfo, Range);
   return false;
 }
 
