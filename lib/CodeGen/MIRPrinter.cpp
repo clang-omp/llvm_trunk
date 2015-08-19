@@ -84,7 +84,8 @@ public:
   void convert(ModuleSlotTracker &MST, yaml::MachineJumpTable &YamlJTI,
                const MachineJumpTableInfo &JTI);
   void convertStackObjects(yaml::MachineFunction &MF,
-                           const MachineFrameInfo &MFI,
+                           const MachineFrameInfo &MFI, MachineModuleInfo &MMI,
+                           ModuleSlotTracker &MST,
                            const TargetRegisterInfo *TRI);
 
 private:
@@ -171,7 +172,7 @@ void MIRPrinter::print(const MachineFunction &MF) {
   ModuleSlotTracker MST(MF.getFunction()->getParent());
   MST.incorporateFunction(*MF.getFunction());
   convert(MST, YamlMF.FrameInfo, *MF.getFrameInfo());
-  convertStackObjects(YamlMF, *MF.getFrameInfo(),
+  convertStackObjects(YamlMF, *MF.getFrameInfo(), MF.getMMI(), MST,
                       MF.getSubtarget().getRegisterInfo());
   if (const auto *ConstantPool = MF.getConstantPool())
     convert(YamlMF, *ConstantPool);
@@ -265,6 +266,8 @@ void MIRPrinter::convert(ModuleSlotTracker &MST,
 
 void MIRPrinter::convertStackObjects(yaml::MachineFunction &MF,
                                      const MachineFrameInfo &MFI,
+                                     MachineModuleInfo &MMI,
+                                     ModuleSlotTracker &MST,
                                      const TargetRegisterInfo *TRI) {
   // Process fixed stack objects.
   unsigned ID = 0;
@@ -332,6 +335,37 @@ void MIRPrinter::convertStackObjects(yaml::MachineFunction &MF,
     const FrameIndexOperand &StackObject = StackObjectInfo->second;
     assert(!StackObject.IsFixed && "Expected a locally mapped stack object");
     MF.StackObjects[StackObject.ID].LocalOffset = LocalObject.second;
+  }
+
+  // Print the stack object references in the frame information class after
+  // converting the stack objects.
+  if (MFI.hasStackProtectorIndex()) {
+    raw_string_ostream StrOS(MF.FrameInfo.StackProtector.Value);
+    MIPrinter(StrOS, MST, RegisterMaskIds, StackObjectOperandMapping)
+        .printStackObjectReference(MFI.getStackProtectorIndex());
+  }
+
+  // Print the debug variable information.
+  for (MachineModuleInfo::VariableDbgInfo &DebugVar :
+       MMI.getVariableDbgInfo()) {
+    auto StackObjectInfo = StackObjectOperandMapping.find(DebugVar.Slot);
+    assert(StackObjectInfo != StackObjectOperandMapping.end() &&
+           "Invalid stack object index");
+    const FrameIndexOperand &StackObject = StackObjectInfo->second;
+    assert(!StackObject.IsFixed && "Expected a non-fixed stack object");
+    auto &Object = MF.StackObjects[StackObject.ID];
+    {
+      raw_string_ostream StrOS(Object.DebugVar.Value);
+      DebugVar.Var->printAsOperand(StrOS, MST);
+    }
+    {
+      raw_string_ostream StrOS(Object.DebugExpr.Value);
+      DebugVar.Expr->printAsOperand(StrOS, MST);
+    }
+    {
+      raw_string_ostream StrOS(Object.DebugLoc.Value);
+      DebugVar.Loc->printAsOperand(StrOS, MST);
+    }
   }
 }
 
@@ -602,11 +636,43 @@ void MIPrinter::printTargetFlags(const MachineOperand &Op) {
   assert(TII && "expected instruction info");
   auto Flags = TII->decomposeMachineOperandsTargetFlags(Op.getTargetFlags());
   OS << "target-flags(";
-  if (const auto *Name = getTargetFlagName(TII, Flags.first))
-    OS << Name;
-  else
-    OS << "<unknown target flag>";
-  // TODO: Print the target's bit flags.
+  const bool HasDirectFlags = Flags.first;
+  const bool HasBitmaskFlags = Flags.second;
+  if (!HasDirectFlags && !HasBitmaskFlags) {
+    OS << "<unknown>) ";
+    return;
+  }
+  if (HasDirectFlags) {
+    if (const auto *Name = getTargetFlagName(TII, Flags.first))
+      OS << Name;
+    else
+      OS << "<unknown target flag>";
+  }
+  if (!HasBitmaskFlags) {
+    OS << ") ";
+    return;
+  }
+  bool IsCommaNeeded = HasDirectFlags;
+  unsigned BitMask = Flags.second;
+  auto BitMasks = TII->getSerializableBitmaskMachineOperandTargetFlags();
+  for (const auto &Mask : BitMasks) {
+    // Check if the flag's bitmask has the bits of the current mask set.
+    if ((BitMask & Mask.first) == Mask.first) {
+      if (IsCommaNeeded)
+        OS << ", ";
+      IsCommaNeeded = true;
+      OS << Mask.second;
+      // Clear the bits which were serialized from the flag's bitmask.
+      BitMask &= ~(Mask.first);
+    }
+  }
+  if (BitMask) {
+    // When the resulting flag's bitmask isn't zero, we know that we didn't
+    // serialize all of the bit flags.
+    if (IsCommaNeeded)
+      OS << ", ";
+    OS << "<unknown bitmask target flag>";
+  }
   OS << ") ";
 }
 

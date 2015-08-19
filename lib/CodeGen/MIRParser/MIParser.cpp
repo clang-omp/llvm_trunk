@@ -72,6 +72,8 @@ class MIParser {
   StringMap<int> Names2TargetIndices;
   /// Maps from direct target flag names to the direct target flag values.
   StringMap<unsigned> Names2DirectTargetFlags;
+  /// Maps from direct target flag names to the bitmask target flag values.
+  StringMap<unsigned> Names2BitmaskTargetFlags;
 
 public:
   MIParser(SourceMgr &SM, MachineFunction &MF, SMDiagnostic &Error,
@@ -97,6 +99,8 @@ public:
   bool parseStandaloneMBB(MachineBasicBlock *&MBB);
   bool parseStandaloneNamedRegister(unsigned &Reg);
   bool parseStandaloneVirtualRegister(unsigned &Reg);
+  bool parseStandaloneStackObject(int &FI);
+  bool parseStandaloneMDNode(MDNode *&Node);
 
   bool
   parseBasicBlockDefinition(DenseMap<unsigned, MachineBasicBlock *> &MBBSlots);
@@ -114,6 +118,7 @@ public:
   bool parseFPImmediateOperand(MachineOperand &Dest);
   bool parseMBBReference(MachineBasicBlock *&MBB);
   bool parseMBBOperand(MachineOperand &Dest);
+  bool parseStackFrameIndex(int &FI);
   bool parseStackObjectOperand(MachineOperand &Dest);
   bool parseFixedStackFrameIndex(int &FI);
   bool parseFixedStackObjectOperand(MachineOperand &Dest);
@@ -209,6 +214,14 @@ private:
   ///
   /// Return true if the name isn't a name of a direct flag.
   bool getDirectTargetFlag(StringRef Name, unsigned &Flag);
+
+  void initNames2BitmaskTargetFlags();
+
+  /// Try to convert a name of a bitmask target flag to the corresponding
+  /// target flag.
+  ///
+  /// Return true if the name isn't a name of a bitmask target flag.
+  bool getBitmaskTargetFlag(StringRef Name, unsigned &Flag);
 };
 
 } // end anonymous namespace
@@ -635,7 +648,7 @@ bool MIParser::parseStandaloneNamedRegister(unsigned &Reg) {
   if (Token.isNot(MIToken::NamedRegister))
     return error("expected a named register");
   if (parseRegister(Reg))
-    return 0;
+    return true;
   lex();
   if (Token.isNot(MIToken::Eof))
     return error("expected end of string after the register reference");
@@ -647,10 +660,32 @@ bool MIParser::parseStandaloneVirtualRegister(unsigned &Reg) {
   if (Token.isNot(MIToken::VirtualRegister))
     return error("expected a virtual register");
   if (parseRegister(Reg))
-    return 0;
+    return true;
   lex();
   if (Token.isNot(MIToken::Eof))
     return error("expected end of string after the register reference");
+  return false;
+}
+
+bool MIParser::parseStandaloneStackObject(int &FI) {
+  lex();
+  if (Token.isNot(MIToken::StackObject))
+    return error("expected a stack object");
+  if (parseStackFrameIndex(FI))
+    return true;
+  if (Token.isNot(MIToken::Eof))
+    return error("expected end of string after the stack object reference");
+  return false;
+}
+
+bool MIParser::parseStandaloneMDNode(MDNode *&Node) {
+  lex();
+  if (Token.isNot(MIToken::exclaim))
+    return error("expected a metadata node");
+  if (parseMDNode(Node))
+    return true;
+  if (Token.isNot(MIToken::Eof))
+    return error("expected end of string after the metadata node");
   return false;
 }
 
@@ -929,7 +964,7 @@ bool MIParser::parseMBBOperand(MachineOperand &Dest) {
   return false;
 }
 
-bool MIParser::parseStackObjectOperand(MachineOperand &Dest) {
+bool MIParser::parseStackFrameIndex(int &FI) {
   assert(Token.is(MIToken::StackObject));
   unsigned ID;
   if (getUnsigned(ID))
@@ -946,7 +981,15 @@ bool MIParser::parseStackObjectOperand(MachineOperand &Dest) {
     return error(Twine("the name of the stack object '%stack.") + Twine(ID) +
                  "' isn't '" + Token.stringValue() + "'");
   lex();
-  Dest = MachineOperand::CreateFI(ObjectInfo->second);
+  FI = ObjectInfo->second;
+  return false;
+}
+
+bool MIParser::parseStackObjectOperand(MachineOperand &Dest) {
+  int FI;
+  if (parseStackFrameIndex(FI))
+    return true;
+  Dest = MachineOperand::CreateFI(FI);
   return false;
 }
 
@@ -1330,11 +1373,24 @@ bool MIParser::parseMachineOperandAndTargetFlags(MachineOperand &Dest) {
       return true;
     if (Token.isNot(MIToken::Identifier))
       return error("expected the name of the target flag");
-    if (getDirectTargetFlag(Token.stringValue(), TF))
-      return error("use of undefined target flag '" + Token.stringValue() +
-                   "'");
+    if (getDirectTargetFlag(Token.stringValue(), TF)) {
+      if (getBitmaskTargetFlag(Token.stringValue(), TF))
+        return error("use of undefined target flag '" + Token.stringValue() +
+                     "'");
+    }
     lex();
-    // TODO: Parse target's bit target flags.
+    while (Token.is(MIToken::comma)) {
+      lex();
+      if (Token.isNot(MIToken::Identifier))
+        return error("expected the name of the target flag");
+      unsigned BitFlag = 0;
+      if (getBitmaskTargetFlag(Token.stringValue(), BitFlag))
+        return error("use of undefined target flag '" + Token.stringValue() +
+                     "'");
+      // TODO: Report an error when using a duplicate bit target flag.
+      TF |= BitFlag;
+      lex();
+    }
     if (expectAndConsume(MIToken::rparen))
       return true;
   }
@@ -1738,6 +1794,26 @@ bool MIParser::getDirectTargetFlag(StringRef Name, unsigned &Flag) {
   return false;
 }
 
+void MIParser::initNames2BitmaskTargetFlags() {
+  if (!Names2BitmaskTargetFlags.empty())
+    return;
+  const auto *TII = MF.getSubtarget().getInstrInfo();
+  assert(TII && "Expected target instruction info");
+  auto Flags = TII->getSerializableBitmaskMachineOperandTargetFlags();
+  for (const auto &I : Flags)
+    Names2BitmaskTargetFlags.insert(
+        std::make_pair(StringRef(I.second), I.first));
+}
+
+bool MIParser::getBitmaskTargetFlag(StringRef Name, unsigned &Flag) {
+  initNames2BitmaskTargetFlags();
+  auto FlagInfo = Names2BitmaskTargetFlags.find(Name);
+  if (FlagInfo == Names2BitmaskTargetFlags.end())
+    return true;
+  Flag = FlagInfo->second;
+  return false;
+}
+
 bool llvm::parseMachineBasicBlockDefinitions(MachineFunction &MF, StringRef Src,
                                              PerFunctionMIParsingState &PFS,
                                              const SlotMapping &IRSlots,
@@ -1784,4 +1860,19 @@ bool llvm::parseVirtualRegisterReference(unsigned &Reg, SourceMgr &SM,
                                          SMDiagnostic &Error) {
   return MIParser(SM, MF, Error, Src, PFS, IRSlots)
       .parseStandaloneVirtualRegister(Reg);
+}
+
+bool llvm::parseStackObjectReference(int &FI, SourceMgr &SM,
+                                     MachineFunction &MF, StringRef Src,
+                                     const PerFunctionMIParsingState &PFS,
+                                     const SlotMapping &IRSlots,
+                                     SMDiagnostic &Error) {
+  return MIParser(SM, MF, Error, Src, PFS, IRSlots)
+      .parseStandaloneStackObject(FI);
+}
+
+bool llvm::parseMDNode(MDNode *&Node, SourceMgr &SM, MachineFunction &MF,
+                       StringRef Src, const PerFunctionMIParsingState &PFS,
+                       const SlotMapping &IRSlots, SMDiagnostic &Error) {
+  return MIParser(SM, MF, Error, Src, PFS, IRSlots).parseStandaloneMDNode(Node);
 }
