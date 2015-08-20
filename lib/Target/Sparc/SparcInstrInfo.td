@@ -298,6 +298,17 @@ multiclass LoadA<string OpcStr, bits<6> Op3Val, bits<6> LoadAOp3Val,
   def Arr  : LoadASI<OpcStr, LoadAOp3Val, OpNode, RC, Ty>;
 }
 
+// The LDSTUB instruction is supported for asm only.
+// It is unlikely that general-purpose code could make use of it.
+// CAS is preferred for sparc v9.
+def LDSTUBrr : F3_1<3, 0b001101, (outs IntRegs:$dst), (ins MEMrr:$addr),
+                  "ldstub [$addr], $dst", []>;
+def LDSTUBri : F3_2<3, 0b001101, (outs IntRegs:$dst), (ins MEMri:$addr),
+                  "ldstub [$addr], $dst", []>;
+def LDSTUBArr : F3_1_asi<3, 0b011101, (outs IntRegs:$dst),
+                         (ins MEMrr:$addr, i8imm:$asi),
+                         "ldstuba [$addr] $asi, $dst", []>;
+
 // Store multiclass - Define both Reg+Reg/Reg+Imm patterns in one shot.
 multiclass Store<string OpcStr, bits<6> Op3Val, SDPatternOperator OpNode,
            RegisterClass RC, ValueType Ty> {
@@ -433,6 +444,22 @@ let DecoderMethod = "DecodeLoadDFP" in {
 let DecoderMethod = "DecodeLoadQFP" in
   defm LDQF  : LoadA<"ldq", 0b100010, 0b110010, load, QFPRegs, f128>,
                Requires<[HasV9, HasHardQuad]>;
+
+let DecoderMethod = "DecodeLoadFP" in
+  let Defs = [FSR] in {
+    let rd = 0 in {
+      def LDFSRrr : F3_1<3, 0b100001, (outs), (ins MEMrr:$addr),
+                     "ld [$addr], %fsr", []>;
+      def LDFSRri : F3_2<3, 0b100001, (outs), (ins MEMri:$addr),
+                     "ld [$addr], %fsr", []>;
+    }
+    let rd = 1 in {
+      def LDXFSRrr : F3_1<3, 0b100001, (outs), (ins MEMrr:$addr),
+                     "ldx [$addr], %fsr", []>, Requires<[HasV9]>;
+      def LDXFSRri : F3_2<3, 0b100001, (outs), (ins MEMri:$addr),
+                     "ldx [$addr], %fsr", []>, Requires<[HasV9]>;
+    }
+  }
 
 // Section B.4 - Store Integer Instructions, p. 95
 let DecoderMethod = "DecodeStoreInt" in {
