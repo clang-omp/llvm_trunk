@@ -1876,10 +1876,11 @@ X86TargetLowering::getOptimalMemOpType(uint64_t Size,
   if ((!IsMemset || ZeroMemset) &&
       !F->hasFnAttribute(Attribute::NoImplicitFloat)) {
     if (Size >= 16 &&
-        (Subtarget->isUnalignedMemAccessFast() ||
+        (!Subtarget->isUnalignedMemUnder32Slow() ||
          ((DstAlign == 0 || DstAlign >= 16) &&
           (SrcAlign == 0 || SrcAlign >= 16)))) {
       if (Size >= 32) {
+        // FIXME: Check if unaligned 32-byte accesses are slow.
         if (Subtarget->hasInt256())
           return MVT::v8i32;
         if (Subtarget->hasFp256())
@@ -1897,6 +1898,9 @@ X86TargetLowering::getOptimalMemOpType(uint64_t Size,
       return MVT::f64;
     }
   }
+  // This is a compromise. If we reach here, unaligned accesses may be slow on
+  // this target. However, creating smaller, aligned accesses could be even
+  // slower and would certainly be a lot more code.
   if (Subtarget->is64Bit() && Size >= 8)
     return MVT::i64;
   return MVT::i32;
@@ -1916,12 +1920,10 @@ X86TargetLowering::allowsMisalignedMemoryAccesses(EVT VT,
                                                   unsigned,
                                                   bool *Fast) const {
   if (Fast) {
-    // FIXME: We should be checking 128-bit accesses separately from smaller
-    // accesses.
     if (VT.getSizeInBits() == 256)
       *Fast = !Subtarget->isUnalignedMem32Slow();
     else
-      *Fast = Subtarget->isUnalignedMemAccessFast();
+      *Fast = !Subtarget->isUnalignedMemUnder32Slow();
   }
   return true;
 }
@@ -7553,6 +7555,23 @@ static SDValue lowerVectorShuffleAsBroadcast(SDLoc DL, MVT VT, SDValue V,
 
   // Check if this is a broadcast of a scalar. We special case lowering
   // for scalars so that we can more effectively fold with loads.
+  // First, look through bitcast: if the original value has a larger element
+  // type than the shuffle, the broadcast element is in essence truncated.
+  // Make that explicit to ease folding.
+  if (V.getOpcode() == ISD::BITCAST && VT.isInteger()) {
+    EVT EltVT = VT.getVectorElementType();
+    SDValue V0 = V.getOperand(0);
+    EVT V0VT = V0.getValueType();
+
+    if (V0VT.isInteger() && V0VT.getVectorElementType().bitsGT(EltVT) &&
+        ((V0.getOpcode() == ISD::BUILD_VECTOR ||
+         (V0.getOpcode() == ISD::SCALAR_TO_VECTOR && BroadcastIdx == 0)))) {
+      V = DAG.getNode(ISD::TRUNCATE, DL, EltVT, V0.getOperand(BroadcastIdx));
+      BroadcastIdx = 0;
+    }
+  }
+
+  // Also check the simpler case, where we can directly reuse the scalar.
   if (V.getOpcode() == ISD::BUILD_VECTOR ||
       (V.getOpcode() == ISD::SCALAR_TO_VECTOR && BroadcastIdx == 0)) {
     V = V.getOperand(BroadcastIdx);
@@ -10732,7 +10751,7 @@ static bool BUILD_VECTORtoBlendMask(BuildVectorSDNode *BuildVector,
   unsigned NumLanes = (NumElems - 1) / 8 + 1;
   unsigned NumElemsInLane = NumElems / NumLanes;
 
-  // Blend for v16i16 should be symetric for the both lanes.
+  // Blend for v16i16 should be symmetric for the both lanes.
   for (unsigned i = 0; i < NumElemsInLane; ++i) {
     SDValue EltCond = BuildVector->getOperand(i);
     SDValue SndLaneEltCond =
@@ -23435,18 +23454,34 @@ static SDValue PerformSHLCombine(SDNode *N, SelectionDAG &DAG) {
       N1C && N0.getOpcode() == ISD::AND &&
       N0.getOperand(1).getOpcode() == ISD::Constant) {
     SDValue N00 = N0.getOperand(0);
-    if (N00.getOpcode() == X86ISD::SETCC_CARRY ||
-        ((N00.getOpcode() == ISD::ANY_EXTEND ||
-          N00.getOpcode() == ISD::ZERO_EXTEND) &&
-         N00.getOperand(0).getOpcode() == X86ISD::SETCC_CARRY)) {
-      APInt Mask = cast<ConstantSDNode>(N0.getOperand(1))->getAPIntValue();
-      APInt ShAmt = N1C->getAPIntValue();
-      Mask = Mask.shl(ShAmt);
-      if (Mask != 0) {
-        SDLoc DL(N);
-        return DAG.getNode(ISD::AND, DL, VT,
-                           N00, DAG.getConstant(Mask, DL, VT));
-      }
+    APInt Mask = cast<ConstantSDNode>(N0.getOperand(1))->getAPIntValue();
+    APInt ShAmt = N1C->getAPIntValue();
+    Mask = Mask.shl(ShAmt);
+    bool MaskOK = false;
+    // We can handle cases concerning bit-widening nodes containing setcc_c if
+    // we carefully interrogate the mask to make sure we are semantics
+    // preserving.
+    // The transform is not safe if the result of C1 << C2 exceeds the bitwidth
+    // of the underlying setcc_c operation if the setcc_c was zero extended.
+    // Consider the following example:
+    //   zext(setcc_c)                 -> i32 0x0000FFFF
+    //   c1                            -> i32 0x0000FFFF
+    //   c2                            -> i32 0x00000001
+    //   (shl (and (setcc_c), c1), c2) -> i32 0x0001FFFE
+    //   (and setcc_c, (c1 << c2))     -> i32 0x0000FFFE
+    if (N00.getOpcode() == X86ISD::SETCC_CARRY) {
+      MaskOK = true;
+    } else if (N00.getOpcode() == ISD::SIGN_EXTEND &&
+               N00.getOperand(0).getOpcode() == X86ISD::SETCC_CARRY) {
+      MaskOK = true;
+    } else if ((N00.getOpcode() == ISD::ZERO_EXTEND ||
+                N00.getOpcode() == ISD::ANY_EXTEND) &&
+               N00.getOperand(0).getOpcode() == X86ISD::SETCC_CARRY) {
+      MaskOK = Mask.isIntN(N00.getOperand(0).getValueSizeInBits());
+    }
+    if (MaskOK && Mask != 0) {
+      SDLoc DL(N);
+      return DAG.getNode(ISD::AND, DL, VT, N00, DAG.getConstant(Mask, DL, VT));
     }
   }
 

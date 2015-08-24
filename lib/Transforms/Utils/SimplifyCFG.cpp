@@ -2199,7 +2199,7 @@ bool llvm::FoldBranchToCommonDest(BranchInst *BI, unsigned BonusInstThreshold) {
       // only given the branch precondition.
       // For an analogous reason, we must also drop all the metadata whose
       // semantics we don't understand.
-      NewBonusInst->dropUnknownMetadata(LLVMContext::MD_dbg);
+      NewBonusInst->dropUnknownNonDebugMetadata();
 
       PredBlock->getInstList().insert(PBI, NewBonusInst);
       NewBonusInst->takeName(BonusInst);

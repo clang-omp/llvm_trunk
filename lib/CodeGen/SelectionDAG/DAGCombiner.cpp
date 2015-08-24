@@ -313,6 +313,7 @@ namespace {
     SDValue visitMGATHER(SDNode *N);
     SDValue visitMSCATTER(SDNode *N);
     SDValue visitFP_TO_FP16(SDNode *N);
+    SDValue visitFP16_TO_FP(SDNode *N);
 
     SDValue visitFADDForFMACombine(SDNode *N);
     SDValue visitFSUBForFMACombine(SDNode *N);
@@ -1411,6 +1412,7 @@ SDValue DAGCombiner::visit(SDNode *N) {
   case ISD::MSCATTER:           return visitMSCATTER(N);
   case ISD::MSTORE:             return visitMSTORE(N);
   case ISD::FP_TO_FP16:         return visitFP_TO_FP16(N);
+  case ISD::FP16_TO_FP:         return visitFP16_TO_FP(N);
   }
   return SDValue();
 }
@@ -2285,7 +2287,7 @@ SDValue DAGCombiner::visitUDIV(SDNode *N) {
       }
     }
   }
-  
+
   // fold (udiv x, c) -> alternate
   bool MinSize = DAG.getMachineFunction().getFunction()->optForMinSize();
   if (N1C && !TLI.isIntDivCheap(N->getValueType(0), MinSize))
@@ -4453,6 +4455,14 @@ SDValue DAGCombiner::visitSHL(SDNode *N) {
     SDValue Shl0 = DAG.getNode(ISD::SHL, SDLoc(N0), VT, N0.getOperand(0), N1);
     SDValue Shl1 = DAG.getNode(ISD::SHL, SDLoc(N1), VT, N0.getOperand(1), N1);
     return DAG.getNode(ISD::ADD, SDLoc(N), VT, Shl0, Shl1);
+  }
+
+  // fold (shl (mul x, c1), c2) -> (mul x, c1 << c2)
+  if (N1C && N0.getOpcode() == ISD::MUL && N0.getNode()->hasOneUse()) {
+    if (ConstantSDNode *N0C1 = isConstOrConstSplat(N0.getOperand(1))) {
+      SDValue Folded = DAG.FoldConstantArithmetic(ISD::SHL, SDLoc(N1), VT, N0C1, N1C);
+      return DAG.getNode(ISD::MUL, SDLoc(N), VT, N0.getOperand(0), Folded);
+    }
   }
 
   if (N1C && !N1C->isOpaque())
@@ -12262,15 +12272,24 @@ static SDValue combineConcatVectorOfExtracts(SDNode *N, SelectionDAG &DAG) {
 
     // What vector are we extracting the subvector from and at what index?
     SDValue ExtVec = Op.getOperand(0);
+
+    // We want the EVT of the original extraction to correctly scale the
+    // extraction index.
+    EVT ExtVT = ExtVec.getValueType();
+
+    // Peek through any bitcast.
+    while (ExtVec.getOpcode() == ISD::BITCAST)
+      ExtVec = ExtVec.getOperand(0);
+
+    // UNDEF nodes convert to UNDEF shuffle mask values.
     if (ExtVec.getOpcode() == ISD::UNDEF) {
       Mask.append((unsigned)NumOpElts, -1);
       continue;
     }
 
-    EVT ExtVT = ExtVec.getValueType();
     if (!isa<ConstantSDNode>(Op.getOperand(1)))
       return SDValue();
-    int ExtIdx = dyn_cast<ConstantSDNode>(Op.getOperand(1))->getZExtValue();
+    int ExtIdx = cast<ConstantSDNode>(Op.getOperand(1))->getZExtValue();
 
     // Ensure that we are extracting a subvector from a vector the same
     // size as the result.
@@ -13101,6 +13120,21 @@ SDValue DAGCombiner::visitFP_TO_FP16(SDNode *N) {
   // fold (fp_to_fp16 (fp16_to_fp op)) -> op
   if (N0->getOpcode() == ISD::FP16_TO_FP)
     return N0->getOperand(0);
+
+  return SDValue();
+}
+
+SDValue DAGCombiner::visitFP16_TO_FP(SDNode *N) {
+  SDValue N0 = N->getOperand(0);
+
+  // fold fp16_to_fp(op & 0xffff) -> fp16_to_fp(op)
+  if (N0->getOpcode() == ISD::AND) {
+    ConstantSDNode *AndConst = getAsNonOpaqueConstant(N0.getOperand(1));
+    if (AndConst && AndConst->getAPIntValue() == 0xffff) {
+      return DAG.getNode(ISD::FP16_TO_FP, SDLoc(N), N->getValueType(0),
+                         N0.getOperand(0));
+    }
+  }
 
   return SDValue();
 }
