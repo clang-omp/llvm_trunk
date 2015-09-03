@@ -47,10 +47,6 @@
 
 using namespace llvm;
 
-// Print tracing output
-static cl::opt<bool> TraceLSP("trace-rewrite-statepoints", cl::Hidden,
-                              cl::init(false));
-
 // Print the liveset found at the insert location
 static cl::opt<bool> PrintLiveSet("spp-print-liveset", cl::Hidden,
                                   cl::init(false));
@@ -277,14 +273,12 @@ static void analyzeParsePointLiveness(
     // Note: This output is used by several of the test cases
     // The order of elements in a set is not stable, put them in a vec and sort
     // by name
-    SmallVector<Value *, 64> temp;
-    temp.insert(temp.end(), liveset.begin(), liveset.end());
-    std::sort(temp.begin(), temp.end(), order_by_name);
+    SmallVector<Value *, 64> Temp;
+    Temp.insert(Temp.end(), liveset.begin(), liveset.end());
+    std::sort(Temp.begin(), Temp.end(), order_by_name);
     errs() << "Live Variables:\n";
-    for (Value *V : temp) {
-      errs() << " " << V->getName(); // no newline
-      V->dump();
-    }
+    for (Value *V : Temp)
+      dbgs() << " " << V->getName() << " " << *V << "\n";
   }
   if (PrintLiveSetSize) {
     errs() << "Safepoint For: " << CS.getCalledValue()->getName() << "\n";
@@ -602,7 +596,18 @@ public:
   void dump() const { print(dbgs()); dbgs() << '\n'; }
   
   void print(raw_ostream &OS) const {
-    OS << status << " (" << base << " - "
+    switch (status) {
+    case Unknown:
+      OS << "U";
+      break;
+    case Base:
+      OS << "B";
+      break;
+    case Conflict:
+      OS << "C";
+      break;
+    };
+    OS << " (" << base << " - "
        << (base ? base->getName() : "nullptr") << "): ";
   }
 
@@ -610,13 +615,16 @@ private:
   Status status;
   Value *base; // non null only if status == base
 };
+}
 
-inline raw_ostream &operator<<(raw_ostream &OS, const BDVState &State) {
+#ifndef NDEBUG
+static raw_ostream &operator<<(raw_ostream &OS, const BDVState &State) {
   State.print(OS);
   return OS;
 }
+#endif
 
-
+namespace {
 typedef DenseMap<Value *, BDVState> ConflictStateMapTy;
 // Values of type BDVState form a lattice, and this is a helper
 // class that implementes the meet operation.  The meat of the meet
@@ -674,6 +682,8 @@ private:
   }
 };
 }
+
+
 /// For a given value or instruction, figure out what base ptr it's derived
 /// from.  For gc objects, this is simply itself.  On success, returns a value
 /// which is the base pointer.  (This is reliable and can be used for
@@ -761,14 +771,12 @@ static Value *findBasePointer(Value *I, DefiningValueMapTy &cache) {
     }
   }
 
-  if (TraceLSP) {
-    errs() << "States after initialization:\n";
-    for (auto Pair : states)
-      dbgs() << " " << Pair.second << " for " << *Pair.first << "\n";
+#ifndef NDEBUG
+  DEBUG(dbgs() << "States after initialization:\n");
+  for (auto Pair : states) {
+    DEBUG(dbgs() << " " << Pair.second << " for " << *Pair.first << "\n");
   }
-
-  // TODO: come back and revisit the state transitions around inputs which
-  // have reached conflict state.  The current version seems too conservative.
+#endif
 
   // Return a phi state for a base defining value.  We'll generate a new
   // base state for known bases and expect to find a cached state otherwise.
@@ -825,12 +833,13 @@ static Value *findBasePointer(Value *I, DefiningValueMapTy &cache) {
     assert(oldSize == states.size() || progress);
   }
 
-  if (TraceLSP) {
-    errs() << "States after meet iteration:\n";
-    for (auto Pair : states)
-      dbgs() << " " << Pair.second << " for " << *Pair.first << "\n";
+#ifndef NDEBUG
+  DEBUG(dbgs() << "States after meet iteration:\n");
+  for (auto Pair : states) {
+    DEBUG(dbgs() << " " << Pair.second << " for " << *Pair.first << "\n");
   }
-
+#endif
+  
   // Insert Phis for all conflicts
   // We want to keep naming deterministic in the loop that follows, so
   // sort the keys before iteration.  This is useful in allowing us to
@@ -1016,15 +1025,20 @@ static Value *findBasePointer(Value *I, DefiningValueMapTy &cache) {
   // doing as a post process step is easier to reason about for the moment.
   DenseMap<Value *, Value *> ReverseMap;
   SmallPtrSet<Instruction *, 16> NewInsts;
-  SmallSetVector<Instruction *, 16> Worklist;
-  for (auto Item : states) {
-    Value *V = Item.first;
-    Value *Base = Item.second.getBase();
+  SmallSetVector<AssertingVH<Instruction>, 16> Worklist;
+  // Note: We need to visit the states in a deterministic order.  We uses the
+  // Keys we sorted above for this purpose.  Note that we are papering over a
+  // bigger problem with the algorithm above - it's visit order is not
+  // deterministic.  A larger change is needed to fix this.
+  for (auto Key : Keys) {
+    Value *V = Key;
+    auto State = states[Key];
+    Value *Base = State.getBase();
     assert(V && Base);
     assert(!isKnownBaseResult(V) && "why did it get added?");
     assert(isKnownBaseResult(Base) &&
            "must be something we 'know' is a base pointer");
-    if (!Item.second.isConflict())
+    if (!State.isConflict())
       continue;
 
     ReverseMap[Base] = V;
@@ -1033,35 +1047,36 @@ static Value *findBasePointer(Value *I, DefiningValueMapTy &cache) {
       Worklist.insert(BaseI);
     }
   }
-  auto PushNewUsers = [&](Instruction *I) {
-    for (User *U : I->users())
+  auto ReplaceBaseInstWith = [&](Value *BDV, Instruction *BaseI,
+                                 Value *Replacement) {
+    // Add users which are new instructions (excluding self references)
+    for (User *U : BaseI->users())
       if (auto *UI = dyn_cast<Instruction>(U))
-        if (NewInsts.count(UI))
+        if (NewInsts.count(UI) && UI != BaseI)
           Worklist.insert(UI);
+    // Then do the actual replacement
+    NewInsts.erase(BaseI);
+    ReverseMap.erase(BaseI);
+    BaseI->replaceAllUsesWith(Replacement);
+    BaseI->eraseFromParent();
+    assert(states.count(BDV));
+    assert(states[BDV].isConflict() && states[BDV].getBase() == BaseI);
+    states[BDV] = BDVState(BDVState::Conflict, Replacement);
   };
   const DataLayout &DL = cast<Instruction>(def)->getModule()->getDataLayout();
   while (!Worklist.empty()) {
     Instruction *BaseI = Worklist.pop_back_val();
+    assert(NewInsts.count(BaseI));
     Value *Bdv = ReverseMap[BaseI];
     if (auto *BdvI = dyn_cast<Instruction>(Bdv))
       if (BaseI->isIdenticalTo(BdvI)) {
         DEBUG(dbgs() << "Identical Base: " << *BaseI << "\n");
-        PushNewUsers(BaseI);
-        BaseI->replaceAllUsesWith(Bdv);
-        BaseI->eraseFromParent();
-        states[Bdv] = BDVState(BDVState::Conflict, Bdv);
-        NewInsts.erase(BaseI);
-        ReverseMap.erase(BaseI);
+        ReplaceBaseInstWith(Bdv, BaseI, Bdv);
         continue;
       }
     if (Value *V = SimplifyInstruction(BaseI, DL)) {
       DEBUG(dbgs() << "Base " << *BaseI << " simplified to " << *V << "\n");
-      PushNewUsers(BaseI);
-      BaseI->replaceAllUsesWith(V);
-      BaseI->eraseFromParent();
-      states[Bdv] = BDVState(BDVState::Conflict, V);
-      NewInsts.erase(BaseI);
-      ReverseMap.erase(BaseI);
+      ReplaceBaseInstWith(Bdv, BaseI, V);
       continue;
     }
   }
@@ -1074,15 +1089,13 @@ static Value *findBasePointer(Value *I, DefiningValueMapTy &cache) {
     Value *base = item.second.getBase();
     assert(v && base);
 
-    if (TraceLSP) {
-      std::string fromstr =
-          cache.count(v) ? (cache[v]->hasName() ? cache[v]->getName() : "")
-                         : "none";
-      errs() << "Updating base value cache"
-             << " for: " << (v->hasName() ? v->getName() : "")
-             << " from: " << fromstr
-             << " to: " << (base->hasName() ? base->getName() : "") << "\n";
-    }
+    std::string fromstr =
+      cache.count(v) ? (cache[v]->hasName() ? cache[v]->getName() : "")
+                     : "none";
+    DEBUG(dbgs() << "Updating base value cache"
+          << " for: " << (v->hasName() ? v->getName() : "")
+          << " from: " << fromstr
+          << " to: " << (base->hasName() ? base->getName() : "") << "\n");
 
     if (cache.count(v)) {
       // Once we transition from the BDV relation being store in the cache to
