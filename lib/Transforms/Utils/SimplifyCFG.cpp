@@ -2990,7 +2990,7 @@ bool SimplifyCFGOpt::SimplifyCleanupReturn(CleanupReturnInst *RI) {
          I != IE; ++I) {
       PHINode *DestPN = cast<PHINode>(I);
  
-      unsigned Idx = DestPN->getBasicBlockIndex(BB);
+      int Idx = DestPN->getBasicBlockIndex(BB);
       // Since BB unwinds to UnwindDest, it has to be in the PHI node.
       assert(Idx != -1);
       // This PHI node has an incoming value that corresponds to a control
